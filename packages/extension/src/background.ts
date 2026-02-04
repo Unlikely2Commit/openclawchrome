@@ -311,10 +311,11 @@ async function handleExtractRequest(req: ExtractRequest) {
           return r.width > 0 && r.height > 0;
         };
 
-        const cssPath = (el: Element): string => {
+        const cssPath = (el: Element, opts?: { stopAt?: Element | null }): string => {
           const parts: string[] = [];
           let cur: Element | null = el;
-          while (cur && parts.length < 5) {
+          const stopAt = opts?.stopAt ?? null;
+          while (cur && cur !== stopAt && parts.length < 5) {
             let part = cur.tagName.toLowerCase();
             const id = cur.getAttribute('id');
             if (id) {
@@ -333,6 +334,32 @@ async function handleExtractRequest(req: ExtractRequest) {
             cur = cur.parentElement;
           }
           return parts.join(' > ');
+        };
+
+        const pierceSelector = (el: Element): string => {
+          const root = el.getRootNode();
+          if (root && root instanceof ShadowRoot && root.host instanceof Element) {
+            const hostSel = pierceSelector(root.host);
+            const innerSel = cssPath(el, { stopAt: root.host });
+            return `${hostSel} >>> ${innerSel}`;
+          }
+          return cssPath(el);
+        };
+
+        const allRoots = (): Array<Document | ShadowRoot> => {
+          const roots: Array<Document | ShadowRoot> = [document];
+          const seen = new Set<any>();
+          for (let i = 0; i < roots.length; i++) {
+            const r = roots[i]!;
+            if (seen.has(r)) continue;
+            seen.add(r);
+            const nodes = (r as any).querySelectorAll ? (r as any).querySelectorAll('*') : [];
+            for (const el of Array.from(nodes) as Element[]) {
+              const sr = (el as any).shadowRoot as ShadowRoot | undefined;
+              if (sr) roots.push(sr);
+            }
+          }
+          return roots;
         };
 
         const getLabelFor = (el: Element): { label?: string; ariaLabel?: string } => {
@@ -385,21 +412,24 @@ async function handleExtractRequest(req: ExtractRequest) {
         if (kind === 'links') {
           const links: Array<{ text: string; url: string }> = [];
           const seen = new Set<string>();
-          const anchors = Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[];
-          for (const a of anchors) {
-            const txt = (a.textContent || '').trim().replace(/\s+/g, ' ');
-            if (!txt) continue;
-            const hrefRaw = a.getAttribute('href') || '';
-            if (!hrefRaw) continue;
-            try {
-              const url = new URL(hrefRaw, location.href).toString();
-              if (seen.has(url)) continue;
-              seen.add(url);
-              links.push({ text: txt.slice(0, 200), url });
-              if (links.length >= max) break;
-            } catch {
-              continue;
+          for (const root of allRoots()) {
+            const anchors = Array.from((root as any).querySelectorAll?.('a[href]') || []) as HTMLAnchorElement[];
+            for (const a of anchors) {
+              const txt = (a.textContent || '').trim().replace(/\s+/g, ' ');
+              if (!txt) continue;
+              const hrefRaw = a.getAttribute('href') || '';
+              if (!hrefRaw) continue;
+              try {
+                const url = new URL(hrefRaw, location.href).toString();
+                if (seen.has(url)) continue;
+                seen.add(url);
+                links.push({ text: txt.slice(0, 200), url });
+                if (links.length >= max) break;
+              } catch {
+                continue;
+              }
             }
+            if (links.length >= max) break;
           }
           return { pageInfo, links: { links } };
         }
@@ -417,28 +447,31 @@ async function handleExtractRequest(req: ExtractRequest) {
             selector: string;
           }> = [];
 
-          const els = Array.from(document.querySelectorAll('input, textarea, select, button')) as Array<
-            HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement
-          >;
+          for (const root of allRoots()) {
+            const els = Array.from((root as any).querySelectorAll?.('input, textarea, select, button') || []) as Array<
+              HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement
+            >;
 
-          for (const el of els) {
-            if (!isVisible(el)) continue;
-            const tag = el.tagName.toLowerCase() as 'input' | 'textarea' | 'select' | 'button';
-            const { label, ariaLabel } = getLabelFor(el);
-            const type = el instanceof HTMLInputElement ? (el.type || undefined) : undefined;
-            const name = (el.getAttribute('name') || '').trim() || undefined;
-            const id = (el.getAttribute('id') || '').trim() || undefined;
-            const placeholder = (el.getAttribute('placeholder') || '').trim().slice(0, 200) || undefined;
-            let value: string | undefined;
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
-              try {
-                if ('value' in el) value = String(el.value ?? '').slice(0, 200) || undefined;
-              } catch {
-                // ignore
+            for (const el of els) {
+              if (!isVisible(el)) continue;
+              const tag = el.tagName.toLowerCase() as 'input' | 'textarea' | 'select' | 'button';
+              const { label, ariaLabel } = getLabelFor(el);
+              const type = el instanceof HTMLInputElement ? (el.type || undefined) : undefined;
+              const name = (el.getAttribute('name') || '').trim() || undefined;
+              const id = (el.getAttribute('id') || '').trim() || undefined;
+              const placeholder = (el.getAttribute('placeholder') || '').trim().slice(0, 200) || undefined;
+              let value: string | undefined;
+              if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+                try {
+                  if ('value' in el) value = String(el.value ?? '').slice(0, 200) || undefined;
+                } catch {
+                  // ignore
+                }
               }
-            }
 
-            fields.push({ tag, type, name, id, label, ariaLabel, placeholder, value, selector: cssPath(el) });
+              fields.push({ tag, type, name, id, label, ariaLabel, placeholder, value, selector: pierceSelector(el) });
+              if (fields.length >= max) break;
+            }
             if (fields.length >= max) break;
           }
           return { pageInfo, forms: { fields } };
@@ -446,31 +479,34 @@ async function handleExtractRequest(req: ExtractRequest) {
 
         // visible_clickables
         const clickables: Array<{ role: string; name: string; selector: string; url?: string }> = [];
-        const candidates = Array.from(
-          document.querySelectorAll('a[href], button, [role="button"], input[type="button"], input[type="submit"]'),
-        ) as Element[];
+        for (const root of allRoots()) {
+          const candidates = Array.from(
+            (root as any).querySelectorAll?.('a[href], button, [role="button"], input[type="button"], input[type="submit"]') || [],
+          ) as Element[];
 
-        for (const el of candidates) {
-          if (!isVisible(el)) continue;
+          for (const el of candidates) {
+            if (!isVisible(el)) continue;
 
-          const role = (el.getAttribute('role') || el.tagName.toLowerCase()) as string;
+            const role = (el.getAttribute('role') || el.tagName.toLowerCase()) as string;
 
-          const name =
-            (el.getAttribute('aria-label') || '').trim() ||
-            (el instanceof HTMLInputElement ? (el.value || '').trim() : '') ||
-            (el.textContent || '').trim();
-          if (!name) continue;
+            const name =
+              (el.getAttribute('aria-label') || '').trim() ||
+              (el instanceof HTMLInputElement ? (el.value || '').trim() : '') ||
+              (el.textContent || '').trim();
+            if (!name) continue;
 
-          let url: string | undefined;
-          if (el instanceof HTMLAnchorElement) {
-            try {
-              url = new URL(el.getAttribute('href') || '', location.href).toString();
-            } catch {
-              // ignore
+            let url: string | undefined;
+            if (el instanceof HTMLAnchorElement) {
+              try {
+                url = new URL(el.getAttribute('href') || '', location.href).toString();
+              } catch {
+                // ignore
+              }
             }
-          }
 
-          clickables.push({ role, name: name.replace(/\s+/g, ' ').slice(0, 200), selector: cssPath(el), url });
+            clickables.push({ role, name: name.replace(/\s+/g, ' ').slice(0, 200), selector: pierceSelector(el), url });
+            if (clickables.length >= max) break;
+          }
           if (clickables.length >= max) break;
         }
 

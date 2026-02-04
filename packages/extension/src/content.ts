@@ -69,11 +69,12 @@ function setWaiting(on: boolean, message?: string) {
   }
 }
 
-function cssPath(el: Element): string {
+function cssPath(el: Element, opts?: { stopAt?: Element | null }): string {
   // best-effort readable selector
   const parts: string[] = [];
   let cur: Element | null = el;
-  while (cur && parts.length < 4) {
+  const stopAt = opts?.stopAt ?? null;
+  while (cur && cur !== stopAt && parts.length < 4) {
     let part = cur.tagName.toLowerCase();
     const id = cur.getAttribute('id');
     if (id) {
@@ -94,6 +95,83 @@ function cssPath(el: Element): string {
   return parts.join(' > ');
 }
 
+function pierceSelector(el: Element): string {
+  // Build a selector chain that can traverse shadow roots using " >>> " delimiter.
+  const root = el.getRootNode();
+  if (root && root instanceof ShadowRoot && root.host instanceof Element) {
+    const hostSel = pierceSelector(root.host);
+    const innerSel = cssPath(el, { stopAt: root.host });
+    return `${hostSel} >>> ${innerSel}`;
+  }
+  return cssPath(el);
+}
+
+function querySelectorPierce(selector: string): Element | null {
+  // Supports either:
+  //  - normal selectors (querySelector)
+  //  - shadow-piercing chain: "host >>> inner >>> deeper"
+  const parts = selector.split('>>>').map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return null;
+
+  let currentRoot: Document | ShadowRoot | Element = document;
+  let found: Element | null = null;
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!;
+
+    const qs = (root: any): Element | null => {
+      try {
+        return root?.querySelector ? (root.querySelector(part) as Element | null) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    // If this is the first part and it isn't found in document, try a deep search across shadow roots.
+    if (i === 0) {
+      found = qs(currentRoot);
+      if (!found) {
+        found = querySelectorDeep(part);
+      }
+    } else {
+      found = qs(currentRoot);
+    }
+
+    if (!found) return null;
+
+    const nextRoot = (found as any).shadowRoot as ShadowRoot | undefined;
+    currentRoot = nextRoot || found;
+  }
+
+  return found;
+}
+
+function querySelectorDeep(part: string): Element | null {
+  // Best-effort: search document + open shadow roots.
+  const queue: Array<Document | ShadowRoot> = [document];
+  const seen = new Set<any>();
+  while (queue.length) {
+    const root = queue.shift()!;
+    if (seen.has(root)) continue;
+    seen.add(root);
+
+    try {
+      const hit = root.querySelector(part) as Element | null;
+      if (hit) return hit;
+    } catch {
+      // ignore
+    }
+
+    // Walk elements in this root; enqueue any shadow roots.
+    const tree = (root as any).querySelectorAll ? (root as any).querySelectorAll('*') : [];
+    for (const el of Array.from(tree) as Element[]) {
+      const sr = (el as any).shadowRoot as ShadowRoot | undefined;
+      if (sr) queue.push(sr);
+    }
+  }
+  return null;
+}
+
 function sendEvent(kind: TabEvent['kind'], data: Omit<TabEvent, 't' | 'tabId' | 'kind'>) {
   if (!IS_CONTROLLED) return;
   const event: TabEvent = { t: 'tab_event', tabId: -1, kind, ...data };
@@ -107,7 +185,7 @@ window.addEventListener(
     const t = e.target;
     if (t instanceof Element) {
       sendEvent('click', {
-        selector: cssPath(t),
+        selector: pierceSelector(t),
         x: (e as MouseEvent).clientX,
         y: (e as MouseEvent).clientY,
         url: location.href,
@@ -124,7 +202,7 @@ window.addEventListener(
     if (!IS_CONTROLLED) return;
     const t = e.target;
     if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
-      sendEvent('input', { selector: cssPath(t), value: t.value.slice(0, 200), url: location.href, title: document.title });
+      sendEvent('input', { selector: pierceSelector(t), value: t.value.slice(0, 200), url: location.href, title: document.title });
     }
   },
   true,
@@ -171,14 +249,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       if (req.action === 'click') {
         if (!req.selector) throw new Error('click requires selector');
-        const el = document.querySelector(req.selector) as HTMLElement | null;
+        const el = querySelectorPierce(req.selector) as HTMLElement | null;
         if (!el) throw new Error(`selector not found: ${req.selector}`);
         el.click();
       }
 
       if (req.action === 'type') {
         if (!req.selector) throw new Error('type requires selector');
-        const el = document.querySelector(req.selector) as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
+        const el = querySelectorPierce(req.selector) as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
         if (!el) throw new Error(`selector not found: ${req.selector}`);
 
         const text = req.text ?? '';

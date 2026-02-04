@@ -41,7 +41,8 @@ const DEFAULTS: Settings = {
   autoConnect: true,
   // v0.4.4: do not implicitly control the active tab just because the popup was opened.
   autoControlOnPopupOpen: false,
-  allowActions: false
+  // v0.4.6+: Allow actions by default; safety boundary is the explicit controlled tab group.
+  allowActions: true
 };
 
 export async function getSettings(): Promise<Settings> {

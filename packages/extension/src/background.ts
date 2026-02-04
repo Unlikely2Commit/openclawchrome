@@ -74,15 +74,23 @@ async function updateBadge() {
   const settings = await getSettings();
   const connected = relay.state.status === 'connected';
 
-  if (settings.allowActions) {
-    // Make the armed state visually obvious.
-    await chrome.action.setBadgeText({ text: 'ARM' });
-    await chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
-    await chrome.action.setTitle({ title: connected ? 'OpenClaw (connected, actions ARMED)' : 'OpenClaw (disconnected, actions ARMED)' });
+  // RAG badge: keep it simple.
+  // Green = connected, Amber = connecting, Red = disconnected.
+  const status = relay.state.status;
+  const dot = '●';
+
+  if (status === 'connected') {
+    await chrome.action.setBadgeText({ text: dot });
+    await chrome.action.setBadgeBackgroundColor({ color: '#2e7d32' });
+    await chrome.action.setTitle({ title: 'OpenClaw (connected)' });
+  } else if (status === 'connecting') {
+    await chrome.action.setBadgeText({ text: dot });
+    await chrome.action.setBadgeBackgroundColor({ color: '#f59f00' });
+    await chrome.action.setTitle({ title: 'OpenClaw (connecting)' });
   } else {
-    await chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
-    await chrome.action.setBadgeBackgroundColor({ color: connected ? '#2e7d32' : '#777' });
-    await chrome.action.setTitle({ title: connected ? 'OpenClaw (connected)' : 'OpenClaw' });
+    await chrome.action.setBadgeText({ text: dot });
+    await chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
+    await chrome.action.setTitle({ title: relay.state.lastError ? `OpenClaw (disconnected: ${relay.state.lastError})` : 'OpenClaw (disconnected)' });
   }
 }
 
@@ -253,7 +261,7 @@ async function handleActionRequest(req: ActionRequest) {
     const reason = allowed.reason || 'Blocked by extension security policy';
     let hint = reason;
     if (reason.toLowerCase().includes('allow actions')) {
-      hint = `${reason}. Open the extension popup and click “Enable actions for this session”.`;
+      hint = `${reason}. Turn ON “Allow Actions” in the extension popup.`;
     } else if (reason.toLowerCase().includes('tab is not')) {
       hint = `${reason}. Open the extension popup and click “Start controlling this tab”.`;
     }
@@ -309,7 +317,7 @@ async function handleActionRequest(req: ActionRequest) {
 async function handleOpenTabRequest(req: OpenTabRequest) {
   const settings = await getSettings();
   if (!settings.allowActions) {
-    await showNotification({ title: 'OpenClaw action blocked', message: 'Allow Actions is disabled. Open the extension popup and click “Enable actions for this session”.' });
+    await showNotification({ title: 'OpenClaw action blocked', message: 'Allow Actions is disabled. Turn ON “Allow Actions” in the extension popup.' });
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
     return;
   }
@@ -906,12 +914,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    if (msg?.t === 'popup_enable_actions_session') {
-      await setSettings({ allowActions: true });
-      await updateBadge();
-      sendResponse({ ok: true });
-      return;
-    }
 
     if (msg?.t === 'popup_detach_active_tab') {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

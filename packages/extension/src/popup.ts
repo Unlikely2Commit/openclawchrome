@@ -401,24 +401,7 @@ async function main() {
     await refresh();
   });
 
-  qs<HTMLButtonElement>('enableActionsSessionBtn').addEventListener('click', async () => {
-    const btn = qs<HTMLButtonElement>('enableActionsSessionBtn');
-    const prev = btn.textContent || 'Enable actions for this session';
-    try {
-      setBtnLoading(btn, true, { label: 'Enabling…' });
-      await rpc<{ t: 'popup_enable_actions_session' }, { ok: true }>({
-        t: 'popup_enable_actions_session'
-      });
-      btn.textContent = 'Enabled';
-      setTimeout(() => {
-        btn.textContent = prev;
-      }, 1200);
-      await refresh();
-    } finally {
-      btn.classList.remove('loading');
-      btn.disabled = false;
-    }
-  });
+
 
   // Audit toggle
   qs<HTMLButtonElement>('auditToggleBtn').addEventListener('click', async () => {

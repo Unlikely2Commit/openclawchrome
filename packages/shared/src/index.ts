@@ -42,6 +42,8 @@ export type Message =
   | OpenTabResult
   | ExtractRequest
   | ExtractResult
+  | ScreenshotRequest
+  | ScreenshotResult
   | WaitForUser
   | Resume
   | ResumeAck
@@ -188,6 +190,28 @@ export type ExtractResult = {
   links?: { links: ExtractLink[] };
   forms?: { fields: ExtractFormField[] };
   visibleClickables?: { clickables: ExtractClickable[] };
+};
+
+export type ScreenshotRequest = {
+  t: 'screenshot_request';
+  requestId: string;
+  tabId: number;
+  /** If true, attempt to capture the full page (best-effort; may fall back). */
+  fullPage?: boolean;
+  /** JPEG quality 0-100 (best-effort). */
+  quality?: number;
+};
+
+export type ScreenshotResult = {
+  t: 'screenshot_result';
+  requestId: string;
+  ok: boolean;
+  tabId: number;
+  error?: string;
+  pageInfo?: PageInfo;
+
+  /** data URL (e.g. data:image/jpeg;base64,...) */
+  dataUrl?: string;
 };
 
 export type WaitForUser = {

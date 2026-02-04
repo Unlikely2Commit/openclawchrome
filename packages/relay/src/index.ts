@@ -61,6 +61,7 @@ type LastState = {
   controlledTab?: ControlledTab;
   lastActionResult?: { env: Envelope<ActionResult>; at: number };
   lastExtractResult?: { env: Envelope<ExtractResult>; at: number };
+  lastScreenshotResult?: { env: Envelope<any>; at: number };
   lastResumeAck?: { env: Envelope<ResumeAck>; at: number };
   lastTabEvent?: { env: Envelope<TabEvent>; at: number };
   lastAttach?: { env: Envelope<AttachTab>; at: number };
@@ -113,6 +114,10 @@ function recordToAgent(token: string, env: Envelope) {
 
   if (env.msg?.t === 'extract_result') {
     last.lastExtractResult = { env: env as Envelope<ExtractResult>, at };
+  }
+
+  if ((env.msg as any)?.t === 'screenshot_result') {
+    last.lastScreenshotResult = { env: env as Envelope<any>, at };
   }
 
   if (env.msg?.t === 'resume_ack') {

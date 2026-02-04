@@ -1095,19 +1095,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })()
     .then(() => true)
     .catch((e) => {
-      // Don't hijack messages intended for the offscreen document.
-    // chrome.runtime.sendMessage broadcasts; the first responder wins.
-    // If we respond here for offscreen_* requests, the caller will see bogus "unknown message".
-    if (msg?.t && typeof msg.t === 'string' && msg.t.startsWith('offscreen_')) {
-      return;
-    }
-    sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
     });
-
-  // For offscreen_* messages, do not keep the channel open here (let offscreen respond).
-  if (msg?.t && typeof msg.t === 'string' && msg.t.startsWith('offscreen_')) {
-    return false;
-  }
 
   return true;
 });

@@ -7,16 +7,17 @@
     <style>
       :root {
         --bg: #0b0d12;
-        --panel: #10131b;
-        --panel-2: #0e1118;
-        --text: #e6e8ee;
-        --muted: #a6adbb;
-        --border: #1d2331;
-        --accent: #ff3b3b;
-        --accent-2: #ff5a5a;
-        --good: #20c997;
-        --bad: #ff3b3b;
+        --card: rgba(255, 255, 255, 0.04);
+        --card-2: rgba(255, 255, 255, 0.02);
+        --border: rgba(255, 255, 255, 0.08);
+        --text: #e9ecf2;
+        --muted: rgba(233, 236, 242, 0.72);
+        --muted2: rgba(233, 236, 242, 0.55);
+        --red: #ff2d2d;
+        --red2: #ff4b4b;
+        --good: #24d19c;
         --warn: #f59f00;
+        --bad: #ff2d2d;
         --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       }
 
@@ -25,11 +26,12 @@
       body {
         margin: 0;
         width: 360px;
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        background: radial-gradient(1200px 600px at 20% -20%, rgba(255,59,59,0.18), transparent 55%),
-                    radial-gradient(900px 500px at 120% 10%, rgba(255,90,90,0.12), transparent 50%),
-                    var(--bg);
         color: var(--text);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background:
+          radial-gradient(900px 520px at 25% -20%, rgba(255, 45, 45, 0.22), transparent 55%),
+          radial-gradient(720px 460px at 120% 0%, rgba(255, 75, 75, 0.12), transparent 52%),
+          linear-gradient(180deg, #0a0c11, #07080b);
       }
 
       .wrap { padding: 12px; }
@@ -42,189 +44,193 @@
         margin-bottom: 10px;
       }
 
-      .title {
-        font-weight: 700;
-        letter-spacing: 0.2px;
+      .brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
       }
 
-      .pill {
+      .brand .name { font-weight: 800; letter-spacing: 0.3px; }
+      .brand .sub { font-size: 12px; color: var(--muted2); }
+
+      .status {
         display: inline-flex;
         align-items: center;
         gap: 8px;
         padding: 6px 10px;
         border-radius: 999px;
-        background: rgba(255,255,255,0.06);
         border: 1px solid var(--border);
+        background: rgba(0,0,0,0.22);
         font-size: 12px;
         color: var(--muted);
         white-space: nowrap;
       }
 
       .dot {
-        width: 8px;
-        height: 8px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         background: var(--warn);
         box-shadow: 0 0 0 3px rgba(245, 159, 0, 0.15);
       }
-      .dot.good { background: var(--good); box-shadow: 0 0 0 3px rgba(32, 201, 151, 0.15); }
-      .dot.bad { background: var(--bad); box-shadow: 0 0 0 3px rgba(255, 59, 59, 0.15); }
+      .dot.good { background: var(--good); box-shadow: 0 0 0 3px rgba(36, 209, 156, 0.14); }
+      .dot.bad { background: var(--bad); box-shadow: 0 0 0 3px rgba(255, 45, 45, 0.14); }
 
-      .section {
-        background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      .card {
         border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 10px;
+        background: linear-gradient(180deg, var(--card), var(--card-2));
+        border-radius: 14px;
+        padding: 12px;
         margin: 10px 0;
+        backdrop-filter: blur(6px);
       }
 
-      .section h3 {
-        margin: 0 0 8px 0;
+      .card h3 {
+        margin: 0 0 10px 0;
         font-size: 12px;
-        letter-spacing: 0.8px;
         text-transform: uppercase;
-        color: var(--muted);
+        letter-spacing: 0.9px;
+        color: var(--muted2);
       }
 
-      label {
-        display: block;
-        font-size: 12px;
-        color: var(--muted);
-        margin: 0 0 6px 0;
-      }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 
       input[type=text], textarea {
         width: 100%;
-        border-radius: 10px;
+        border-radius: 12px;
         border: 1px solid var(--border);
-        background: var(--panel-2);
+        background: rgba(0,0,0,0.22);
         color: var(--text);
-        padding: 9px 10px;
+        padding: 10px 10px;
         outline: none;
       }
+      input[type=text]::placeholder, textarea::placeholder { color: rgba(233,236,242,0.35); }
+      textarea { height: 70px; resize: vertical; font-family: var(--mono); }
 
-      input[type=text]::placeholder, textarea::placeholder { color: rgba(166,173,187,0.55); }
-
-      textarea { height: 70px; font-family: var(--mono); resize: vertical; }
-
-      .row { display: flex; gap: 8px; align-items: center; }
+      .row { display: flex; align-items: center; gap: 8px; }
       .row > * { flex: 1; }
 
       .btn {
-        border-radius: 10px;
+        padding: 10px 10px;
+        border-radius: 12px;
         border: 1px solid var(--border);
-        background: rgba(255,255,255,0.06);
+        background: rgba(255,255,255,0.05);
         color: var(--text);
-        padding: 9px 10px;
-        font-weight: 600;
+        font-weight: 700;
         cursor: pointer;
       }
 
-      .btn:hover { border-color: rgba(255,255,255,0.18); }
-
       .btn.primary {
-        background: linear-gradient(180deg, rgba(255,59,59,0.95), rgba(200,20,20,0.95));
-        border-color: rgba(255,59,59,0.45);
+        background: linear-gradient(180deg, rgba(255,45,45,0.95), rgba(200,18,18,0.95));
+        border-color: rgba(255,45,45,0.45);
       }
 
-      .btn.primary:hover { filter: brightness(1.05); }
-
-      .btn.ghost {
-        background: transparent;
-        border-color: var(--border);
+      .btn.secondary {
+        background: rgba(0,0,0,0.2);
         color: var(--muted);
-        font-weight: 600;
       }
 
-      .btn.small { padding: 7px 9px; font-size: 12px; }
+      .btn.small { padding: 8px 10px; font-size: 12px; }
 
-      .muted { color: var(--muted); font-size: 12px; }
+      .hint { font-size: 12px; color: var(--muted2); line-height: 1.35; }
       .mono { font-family: var(--mono); }
+
+      .pairBox {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,0.18);
+        border-radius: 14px;
+        padding: 10px;
+        display: none;
+      }
 
       .kv {
         display: grid;
-        grid-template-columns: 90px 1fr;
-        gap: 6px 10px;
-        margin-top: 8px;
+        grid-template-columns: 72px 1fr;
+        gap: 8px 10px;
         font-size: 12px;
       }
-      .kv div:nth-child(odd) { color: var(--muted); }
+      .kv .k { color: var(--muted2); }
+      .kv .v { color: var(--text); }
+
+      .cmd {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(0,0,0,0.22);
+        border-radius: 12px;
+        margin-top: 10px;
+      }
+      .cmd .text { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .toggle {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 10px;
-        padding: 10px;
         border: 1px solid var(--border);
-        border-radius: 12px;
-        background: rgba(255,255,255,0.03);
+        background: rgba(0,0,0,0.18);
+        border-radius: 14px;
+        padding: 12px;
       }
-
-      .toggle .left { display: flex; flex-direction: column; gap: 2px; }
-      .toggle .name { font-weight: 700; }
-      .toggle .desc { font-size: 12px; color: var(--muted); }
-
-      .switch {
-        width: 44px;
-        height: 26px;
-        border-radius: 999px;
-        position: relative;
-        border: 1px solid var(--border);
-        background: rgba(255,255,255,0.06);
-        flex: 0 0 auto;
-      }
-
-      .switch::after {
-        content: '';
-        position: absolute;
-        top: 3px;
-        left: 3px;
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        background: rgba(255,255,255,0.85);
-        transition: transform 120ms ease;
-      }
+      .toggle .left { display:flex; flex-direction:column; gap:2px; }
+      .toggle .name { font-weight: 800; }
+      .toggle .desc { font-size: 12px; color: var(--muted2); }
 
       input[type=checkbox].switch-input { display:none; }
-
-      input[type=checkbox].switch-input:checked + .switch {
-        background: rgba(255,59,59,0.25);
-        border-color: rgba(255,59,59,0.45);
-      }
-
-      input[type=checkbox].switch-input:checked + .switch::after {
-        transform: translateX(18px);
-        background: rgba(255,255,255,0.92);
-      }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-        background: rgba(0,0,0,0.12);
+      .switch {
+        width: 46px;
+        height: 28px;
+        border-radius: 999px;
         border: 1px solid var(--border);
-        border-radius: 10px;
-        overflow: hidden;
+        background: rgba(255,255,255,0.06);
+        position: relative;
+        flex: 0 0 auto;
+      }
+      .switch::after {
+        content: '';
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.88);
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        transition: transform 140ms ease;
+      }
+      input[type=checkbox].switch-input:checked + .switch {
+        background: rgba(255,45,45,0.25);
+        border-color: rgba(255,45,45,0.45);
+      }
+      input[type=checkbox].switch-input:checked + .switch::after { transform: translateX(18px); }
+
+      .audit {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 170px;
+        overflow: auto;
+        padding-right: 2px;
       }
 
-      thead th {
-        text-align: left;
-        font-weight: 700;
-        color: var(--muted);
-        padding: 8px;
-        border-bottom: 1px solid var(--border);
-        background: rgba(255,255,255,0.03);
+      .auditItem {
+        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(0,0,0,0.18);
+        border-radius: 12px;
+        padding: 8px 10px;
       }
 
-      tbody td {
-        padding: 8px;
-        border-bottom: 1px solid rgba(29,35,49,0.65);
-        vertical-align: top;
+      .auditTop {
+        display:flex;
+        align-items:center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 11px;
+        color: var(--muted2);
       }
-
-      tbody tr:last-child td { border-bottom: none; }
 
       .tag {
         display: inline-flex;
@@ -232,45 +238,76 @@
         gap: 6px;
         padding: 2px 8px;
         border-radius: 999px;
-        border: 1px solid var(--border);
-        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(255,255,255,0.04);
         font-size: 11px;
         color: var(--muted);
       }
 
-      .err { color: #ffd1d1; }
+      .auditDetail {
+        margin-top: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        color: rgba(233,236,242,0.86);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
 
-      .spacer { height: 8px; }
+      .footer {
+        display:flex;
+        justify-content: flex-end;
+        color: var(--muted2);
+        font-size: 11px;
+        margin-top: 8px;
+      }
+
+      .error { color: #ffd1d1; }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="topbar">
-        <div class="title">OpenClaw</div>
-        <div class="pill" id="statusPill">
+        <div class="brand">
+          <div class="name">OpenClaw</div>
+          <div class="sub">Browser Connector</div>
+        </div>
+        <div class="status" id="statusPill">
           <span class="dot" id="statusDot"></span>
           <span id="statusText">Loading…</span>
         </div>
       </div>
 
-      <div class="section">
-        <h3>Relay Server</h3>
-        <label for="httpBase">Relay HTTP Base URL</label>
+      <div class="card">
+        <h3>Pairing</h3>
+        <label for="httpBase">Relay server</label>
         <input id="httpBase" type="text" placeholder="http://ec2-x-x-x-x.compute.amazonaws.com:8787" />
 
-        <div class="spacer"></div>
+        <div style="height:10px"></div>
         <div class="row">
           <button class="btn primary" id="pairBtn">Pair</button>
-          <button class="btn" id="connectBtn" title="Connect WebSocket">Connect</button>
-          <button class="btn ghost" id="disconnectBtn" title="Disconnect WebSocket">Disconnect</button>
+          <button class="btn secondary" id="connectBtn" title="Connect WebSocket">Connect</button>
+          <button class="btn secondary" id="disconnectBtn" title="Disconnect WebSocket">Disconnect</button>
         </div>
 
-        <div class="spacer"></div>
-        <div class="muted" id="pairInfo"></div>
+        <div class="pairBox" id="pairBox">
+          <div class="kv">
+            <div class="k">Relay</div><div class="v"><span class="mono" id="pairRelay">—</span></div>
+            <div class="k">Code</div><div class="v"><span class="mono" id="pairCode">—</span></div>
+          </div>
+
+          <div class="cmd">
+            <div class="text" id="pairCmd">pair browser —</div>
+            <button class="btn small" id="copyPairCmd">Copy</button>
+          </div>
+
+          <div class="hint" style="margin-top:10px" id="pairHint">Send the command to your OpenClaw bot and approve pairing.</div>
+        </div>
+
+        <div class="hint" id="pairInfo" style="margin-top:10px"></div>
       </div>
 
-      <div class="section">
-        <h3>Tab Attach</h3>
+      <div class="card">
+        <h3>Tab</h3>
         <div class="toggle">
           <div class="left">
             <div class="name">Attach current tab</div>
@@ -281,17 +318,15 @@
             <span class="switch" aria-hidden="true"></span>
           </label>
         </div>
-
-        <div class="spacer"></div>
-        <div class="muted" id="attachedList"></div>
+        <div class="hint" id="attachedList" style="margin-top:10px"></div>
       </div>
 
-      <div class="section">
+      <div class="card">
         <h3>Security</h3>
         <div class="toggle">
           <div class="left">
             <div class="name">Allow Actions</div>
-            <div class="desc">If enabled, OpenClaw can click/type/navigate on allowed domains.</div>
+            <div class="desc">Enable remote click/type/navigate on allowed domains.</div>
           </div>
           <label style="margin:0; display:flex; align-items:center; gap:8px;">
             <input class="switch-input" type="checkbox" id="allowActions" />
@@ -299,30 +334,18 @@
           </label>
         </div>
 
-        <div class="spacer"></div>
-        <label for="allowlist">Domain allowlist (one per line)</label>
+        <div style="height:10px"></div>
+        <label for="allowlist">Domain allowlist</label>
         <textarea id="allowlist" placeholder="example.com\napp.example.com"></textarea>
-        <div class="muted">Actions run only when Allow Actions is enabled and the current tab hostname matches this allowlist.</div>
+        <div class="hint">Actions run only when Allow Actions is enabled and the current tab hostname matches this allowlist.</div>
       </div>
 
-      <div class="section">
-        <h3>Audit Log</h3>
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 84px">Time</th>
-              <th style="width: 78px">Kind</th>
-              <th style="width: 52px">Tab</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody id="auditBody">
-            <tr><td colspan="4" class="muted">Loading…</td></tr>
-          </tbody>
-        </table>
+      <div class="card">
+        <h3>Audit</h3>
+        <div class="audit" id="auditList"></div>
       </div>
 
-      <div class="muted" id="buildInfo" style="text-align:right;"></div>
+      <div class="footer" id="buildInfo"></div>
     </div>
 
     <script type="module" src="popup.js"></script>

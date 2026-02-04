@@ -53,32 +53,61 @@ async function getActiveTabId(): Promise<number | null> {
   }
 }
 
-function setStatusPill(wsStatus: string, token?: string) {
+function setStatusPill(wsStatus: string) {
   const dot = qs<HTMLSpanElement>('statusDot');
   const text = qs<HTMLSpanElement>('statusText');
 
   const connected = wsStatus === 'connected';
-  const paired = !!token;
 
+  dot.classList.remove('good', 'bad');
   if (connected) {
-    dot.classList.remove('bad');
     dot.classList.add('good');
-    text.textContent = paired ? 'Connected' : 'Connected (unpaired?)';
-    return;
+    text.textContent = 'Connected';
+  } else {
+    dot.classList.add('bad');
+    text.textContent = 'Disconnected';
   }
-
-  dot.classList.remove('good');
-  dot.classList.add('bad');
-  text.textContent = paired ? 'Disconnected' : 'Disconnected';
 }
 
-async function renderAttachedList(attachedTabIds: number[]) {
-  const el = qs('attachedList');
-  if (!attachedTabIds?.length) {
-    el.textContent = 'No tabs attached.';
-    return;
+function setPairInfo(text: string, isError = false) {
+  const el = qs('pairInfo');
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+
+function showPairBox(show: boolean) {
+  qs('pairBox').style.display = show ? 'block' : 'none';
+}
+
+function setPairBoxDetails(opts: { relayShort: string; userCode: string }) {
+  qs('pairRelay').textContent = opts.relayShort;
+  qs('pairCode').textContent = opts.userCode;
+  const cmd = `pair browser ${opts.userCode}`;
+  qs('pairCmd').textContent = cmd;
+  (qs('copyPairCmd') as HTMLButtonElement).dataset.cmd = cmd;
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Fallback for older environments
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
   }
-  el.textContent = `Attached tabs: ${attachedTabIds.join(', ')}`;
 }
 
 async function refresh() {
@@ -88,11 +117,12 @@ async function refresh() {
   qs<HTMLInputElement>('httpBase').value = s.httpBase || '';
 
   const wsStatus = state.ws?.status || 'disconnected';
-  setStatusPill(wsStatus, s.token);
+  setStatusPill(wsStatus);
 
-  // Build info (optional)
+  // Build info (best-effort)
   try {
-    qs('buildInfo').textContent = `build ${String((globalThis as any).__BUILD_TIME__ || '').slice(0, 19)}`;
+    const t = String((globalThis as any).__BUILD_TIME__ || '');
+    qs('buildInfo').textContent = t ? `build ${t.slice(0, 19)}` : '';
   } catch {
     // ignore
   }
@@ -113,57 +143,68 @@ async function refresh() {
     attachDesc.textContent = isActiveAttached ? `Tab ${activeTabId} is attached.` : `Tab ${activeTabId} is not attached.`;
   }
 
-  await renderAttachedList(attached);
+  const attachedList = qs('attachedList');
+  attachedList.textContent = attached.length ? `Attached tabs: ${attached.join(', ')}` : 'No tabs attached.';
 
   // Security
   qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
   qs<HTMLTextAreaElement>('allowlist').value = (s.allowlist || []).join('\n');
 
   // Audit
+  const list = qs('auditList');
+  list.innerHTML = '';
   const audit = await getAudit();
-  const body = qs<HTMLTableSectionElement>('auditBody');
-  body.innerHTML = '';
   const items = audit.slice(-25).reverse();
   if (!items.length) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = 4;
-    td.textContent = 'No audit entries yet.';
-    td.style.color = 'var(--muted)';
-    tr.appendChild(td);
-    body.appendChild(tr);
+    const div = document.createElement('div');
+    div.className = 'hint';
+    div.textContent = 'No audit entries yet.';
+    list.appendChild(div);
   } else {
     for (const entry of items) {
-      const tr = document.createElement('tr');
+      const item = document.createElement('div');
+      item.className = 'auditItem';
 
-      const t1 = document.createElement('td');
-      t1.textContent = new Date(entry.ts).toISOString().slice(11, 19);
+      const top = document.createElement('div');
+      top.className = 'auditTop';
+      const time = document.createElement('div');
+      time.textContent = new Date(entry.ts).toISOString().slice(11, 19);
 
-      const t2 = document.createElement('td');
-      t2.textContent = String(entry.kind || '');
+      const right = document.createElement('div');
+      right.style.display = 'flex';
+      right.style.gap = '6px';
 
-      const t3 = document.createElement('td');
-      t3.textContent = entry.tabId != null ? String(entry.tabId) : '-';
+      const tag1 = document.createElement('span');
+      tag1.className = 'tag';
+      tag1.textContent = String(entry.kind || '');
 
-      const t4 = document.createElement('td');
-      t4.textContent = JSON.stringify(entry.detail);
-      t4.style.fontFamily = 'var(--mono)';
+      const tag2 = document.createElement('span');
+      tag2.className = 'tag';
+      tag2.textContent = entry.tabId != null ? `tab ${entry.tabId}` : 'tab -';
 
-      tr.appendChild(t1);
-      tr.appendChild(t2);
-      tr.appendChild(t3);
-      tr.appendChild(t4);
-      body.appendChild(tr);
+      right.appendChild(tag1);
+      right.appendChild(tag2);
+
+      top.appendChild(time);
+      top.appendChild(right);
+
+      const detail = document.createElement('div');
+      detail.className = 'auditDetail';
+      detail.textContent = JSON.stringify(entry.detail);
+
+      item.appendChild(top);
+      item.appendChild(detail);
+      list.appendChild(item);
     }
   }
 }
 
 async function pairFlow() {
   const httpBase = qs<HTMLInputElement>('httpBase').value.trim();
-  if (!httpBase) throw new Error('Set Relay HTTP Base URL');
+  if (!httpBase) throw new Error('Set Relay server URL');
 
-  const pairInfo = qs('pairInfo');
-  pairInfo.textContent = 'Requesting pairing code…';
+  setPairInfo('Requesting pairing code…');
+  showPairBox(false);
 
   // Save httpBase immediately.
   await rpc({ t: 'popup_set_settings', patch: { httpBase } });
@@ -178,17 +219,12 @@ async function pairFlow() {
   if (!r1.ok) throw new Error(`pair/request failed: ${r1.status}`);
   const data = await r1.json();
 
-  const fp = data.fingerprint?.short ? String(data.fingerprint.short).toUpperCase() : '????';
+  const relayShort = data.fingerprint?.short ? String(data.fingerprint.short).toUpperCase() : '????';
   const userCode = String(data.userCode || '').toUpperCase();
 
-  pairInfo.innerHTML = `
-<div class="kv">
-  <div>Relay</div><div><span class="mono">${fp}</span></div>
-  <div>Code</div><div><span class="mono">${userCode}</span></div>
-  <div>Command</div><div><span class="mono">pair browser ${userCode}</span></div>
-</div>
-<div style="margin-top:8px; color: var(--muted); font-size: 12px;">Waiting for approval…</div>
-`;
+  setPairBoxDetails({ relayShort, userCode });
+  showPairBox(true);
+  setPairInfo('Waiting for approval…');
 
   const expiresAt = data.expiresAt as number;
   while (Date.now() < expiresAt) {
@@ -200,28 +236,43 @@ async function pairFlow() {
     const p = await r2.json();
     if (p.status === 'verified') {
       await rpc({ t: 'popup_set_settings', patch: { token: p.token } });
-      pairInfo.textContent = 'Paired. Click Connect.';
+      setPairInfo('Paired. Click Connect.');
       await refresh();
       return;
     }
   }
 
-  pairInfo.textContent = 'Pairing expired.';
+  setPairInfo('Pairing expired. Click Pair to try again.', true);
 }
 
 async function main() {
-  qs('pairBtn').addEventListener('click', () => pairFlow().catch((e) => (qs('pairInfo').textContent = String(e.message || e))));
+  // Pair
+  qs('pairBtn').addEventListener('click', () =>
+    pairFlow().catch((e) => setPairInfo(String(e.message || e), true)),
+  );
 
+  // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_connect' });
     await refresh();
   });
-
   qs('disconnectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_disconnect' });
     await refresh();
   });
 
+  // Copy pairing command
+  qs<HTMLButtonElement>('copyPairCmd').addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const cmd = btn.dataset.cmd || '';
+    if (!cmd) return;
+    const ok = await copyText(cmd);
+    const prev = btn.textContent || 'Copy';
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(() => (btn.textContent = prev), 900);
+  });
+
+  // Attach toggle
   qs<HTMLInputElement>('attachToggle').addEventListener('change', async (e) => {
     const wantAttached = (e.target as HTMLInputElement).checked;
     const activeTabId = await getActiveTabId();
@@ -239,6 +290,7 @@ async function main() {
     await refresh();
   });
 
+  // Security settings
   qs<HTMLInputElement>('allowActions').addEventListener('change', async (e) => {
     const allowActions = (e.target as HTMLInputElement).checked;
     await rpc({ t: 'popup_set_settings', patch: { allowActions } });
@@ -251,13 +303,15 @@ async function main() {
     await refresh();
   });
 
-  // Save Relay URL on blur for convenience.
+  // Relay URL save on change
   qs<HTMLInputElement>('httpBase').addEventListener('change', async (e) => {
     const httpBase = (e.target as HTMLInputElement).value.trim();
     await rpc({ t: 'popup_set_settings', patch: { httpBase } });
     await refresh();
   });
 
+  showPairBox(false);
+  setPairInfo('');
   await refresh();
 }
 

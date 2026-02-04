@@ -60,6 +60,24 @@ app.post('/pair/request', (req, res) => {
   res.json(out);
 });
 
+// One-click pairing confirmation for the same browser that initiated /pair/request.
+// This removes the confusing "open another tab" step while preserving explicit user intent
+// (the user has to click Pair in the extension).
+app.post('/pair/confirm', (req, res) => {
+  const clientId = String(req.body?.clientId || '');
+  const deviceCode = String(req.body?.deviceCode || '');
+  if (!clientId || !deviceCode) return res.status(400).json({ error: 'clientId and deviceCode required' });
+
+  const entry = pending.get(deviceCode);
+  if (!entry || entry.clientId !== clientId) return res.status(404).json({ error: 'not found' });
+  if (Date.now() > entry.expiresAt) return res.status(410).json({ error: 'expired' });
+
+  if (!entry.token) entry.token = rand(24);
+  entry.verified = true;
+
+  return res.json({ ok: true, token: entry.token });
+});
+
 app.get('/pair/poll', (req, res) => {
   const clientId = String(req.query.clientId || '');
   const deviceCode = String(req.query.deviceCode || '');

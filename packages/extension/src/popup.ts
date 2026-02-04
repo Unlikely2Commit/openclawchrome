@@ -80,12 +80,34 @@ async function pairFlow() {
   if (!r1.ok) throw new Error(`pair/request failed: ${r1.status}`);
   const data = await r1.json();
 
-  pairInfo.innerHTML = `On another device, open <b>${data.verificationUri}</b> and enter code <b>${data.userCode}</b>.`;
+  // One-click confirm (same browser). If it fails for any reason, we fall back to manual verify.
+  try {
+    pairInfo.textContent = 'Confirming pairing…';
+    const rConfirm = await fetch(new URL('/pair/confirm', httpBase).toString(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId, deviceCode: data.deviceCode })
+    });
+    if (rConfirm.ok) {
+      const c = await rConfirm.json();
+      if (c?.token) {
+        await rpc({ t: 'popup_set_settings', patch: { token: c.token } });
+        pairInfo.textContent = 'Paired. Click Connect WS.';
+        return;
+      }
+    }
+  } catch {
+    // ignore; fall back below
+  }
+
+  pairInfo.innerHTML = `Pairing needs confirmation. Open <b>${data.verificationUri}</b> in a new tab and enter code <b>${data.userCode}</b>.`;
 
   const expiresAt = data.expiresAt as number;
   while (Date.now() < expiresAt) {
     await new Promise((r) => setTimeout(r, 1500));
-    const r2 = await fetch(new URL(`/pair/poll?clientId=${encodeURIComponent(clientId)}&deviceCode=${encodeURIComponent(data.deviceCode)}` , httpBase).toString());
+    const r2 = await fetch(
+      new URL(`/pair/poll?clientId=${encodeURIComponent(clientId)}&deviceCode=${encodeURIComponent(data.deviceCode)}`, httpBase).toString(),
+    );
     if (!r2.ok) continue;
     const p = await r2.json();
     if (p.status === 'verified') {

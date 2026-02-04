@@ -904,13 +904,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const settings = await getSettings();
 
       // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
-      if (settings.autoConnect !== false) void ensureConnected();
+      // If the active tab is already controlled, always try to connect (even if autoConnect was off)
+      // because the user clearly intends to drive with the agent.
+      if (settings.autoConnect !== false) {
+        void ensureConnected();
+      }
 
       // v0.4.4: opening the popup must NOT implicitly control whatever active tab happens to be focused.
       // Tabs are only controlled when the user explicitly clicks Start, or when the agent opens a tab.
 
       const after = await getSettings();
       const controlled = await getControlledInfoForActiveTab();
+
+      // If a tab is already controlled, prefer connecting to the relay so the agent can act.
+      try {
+        if (controlled.inGroup && relay.state.status === 'disconnected' && after.httpBase && after.token) {
+          if (after.autoConnect === false) await setSettings({ autoConnect: true });
+          void ensureConnected();
+        }
+      } catch {
+        // ignore
+      }
 
       // If the tab is already controlled, re-announce it opportunistically while the popup is open.
       // This fixes cases where WS reconnected after Start, and the original attach_tab got dropped.
@@ -964,9 +978,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.t === 'popup_start_control_active_tab') {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) throw new Error('No active tab');
-      // If the user previously hit Stop, clear the skip so Start works immediately.
+
+      // Start-controlling should implicitly connect (and enable autoConnect) so there is no
+      // confusing "connect-first" trap.
       const settings = await getSettings();
+      if (settings.httpBase && settings.token) {
+        if (settings.autoConnect === false) await setSettings({ autoConnect: true });
+        void ensureConnected();
+      }
+
+      // If the user previously hit Stop, clear the skip so Start works immediately.
       if (settings.skipAutoControlTabId === tab.id) await setSettings({ skipAutoControlTabId: undefined });
+
       await ensureControlled(tab.id);
       sendResponse({ ok: true });
       return;

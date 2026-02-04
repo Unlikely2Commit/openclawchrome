@@ -167,6 +167,9 @@ relay.onMessage(async (env: Envelope) => {
   if (msg.t === 'open_tab_request') {
     await handleOpenTabRequest(msg);
   }
+  if ((msg as any).t === 'extract_request') {
+    await handleExtractRequest(msg as any);
+  }
 });
 
 async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: string; url?: string }> {
@@ -252,6 +255,82 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error }, 'agent');
+  }
+}
+
+async function handleExtractRequest(req: any) {
+  const allowed = await isAllowedForTab(req.tabId);
+  if (!allowed.ok) {
+    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason } as any, 'agent');
+    return;
+  }
+
+  const max = Math.max(1, Math.min(30, req.max ?? 12));
+
+  try {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId: req.tabId },
+      func: (kind: string, max: number) => {
+        const url = location.href;
+        const title = document.title;
+
+        if (kind === 'page_info') {
+          return { url, title, items: [] };
+        }
+
+        // reddit listing extractor: return threads (title + absolute url)
+        const out: Array<{ title: string; url: string }> = [];
+        const seen = new Set<string>();
+
+        const anchors = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
+        for (const a of anchors) {
+          const href = a.href || '';
+          if (!href) continue;
+          if (!href.includes('/comments/')) continue;
+
+          const text = (a.textContent || '').trim();
+          if (!text) continue;
+
+          // Skip obvious non-title links
+          if (text.toLowerCase() === 'comments') continue;
+          if (text.toLowerCase() === 'share') continue;
+
+          // Normalize to canonical post url (strip query/hash)
+          try {
+            const u = new URL(href);
+            u.search = '';
+            u.hash = '';
+            const key = u.toString();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push({ title: text.slice(0, 200), url: key });
+            if (out.length >= max) break;
+          } catch {
+            continue;
+          }
+        }
+
+        return { url, title, items: out };
+      },
+      args: [req.kind, max]
+    });
+
+    const payload = (result || {}) as any;
+    relay.send(
+      {
+        t: 'extract_result',
+        requestId: req.requestId,
+        ok: true,
+        tabId: req.tabId,
+        url: payload.url,
+        title: payload.title,
+        items: Array.isArray(payload.items) ? payload.items : []
+      } as any,
+      'agent'
+    );
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, error } as any, 'agent');
   }
 }
 

@@ -40,6 +40,8 @@ export type Message =
   | ActionResult
   | OpenTabRequest
   | OpenTabResult
+  | ExtractRequest
+  | ExtractResult
   | Ping;
 
 export type Hello = {
@@ -110,6 +112,33 @@ export type OpenTabResult = {
   ok: boolean;
   tabId?: number;
   error?: string;
+};
+
+export type ExtractRequest = {
+  t: 'extract_request';
+  requestId: string;
+  tabId: number;
+
+  /**
+   * Keep this intentionally limited; add new kinds as needed.
+   */
+  kind: 'reddit_listing' | 'page_info';
+
+  /** Max number of items to return when kind supports lists. */
+  max?: number;
+};
+
+export type ExtractResult = {
+  t: 'extract_result';
+  requestId: string;
+  ok: boolean;
+  error?: string;
+
+  tabId: number;
+  url?: string;
+  title?: string;
+
+  items?: Array<{ title: string; url: string }>;
 };
 
 export type Ping = {

@@ -58,6 +58,7 @@ type ControlledTab = {
 type LastState = {
   controlledTab?: ControlledTab;
   lastActionResult?: { env: Envelope<ActionResult>; at: number };
+  lastExtractResult?: { env: Envelope<any>; at: number };
   lastTabEvent?: { env: Envelope<TabEvent>; at: number };
   lastAttach?: { env: Envelope<AttachTab>; at: number };
   lastDetach?: { env: Envelope<DetachTab>; at: number };
@@ -105,6 +106,10 @@ function recordToAgent(token: string, env: Envelope) {
 
   if (env.msg?.t === 'action_result') {
     last.lastActionResult = { env: env as any, at };
+  }
+
+  if ((env.msg as any)?.t === 'extract_result') {
+    last.lastExtractResult = { env: env as any, at };
   }
 
   lastByToken.set(token, last);

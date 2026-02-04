@@ -2,6 +2,7 @@ import type { ActionRequest, TabEvent } from '@openclaw/shared';
 
 let IS_CONTROLLED = false;
 let WAITING_OVERLAY: HTMLDivElement | null = null;
+let BORDER_STYLE: HTMLStyleElement | null = null;
 
 // Keep the MV3 service worker alive while a tab is controlled.
 // This prevents Chrome from suspending the worker and tearing down the relay WebSocket (1006 flapping).
@@ -49,19 +50,63 @@ function stopKeepalive() {
 // v0.3.1: removed the in-page pill/label overlay. The red border + tab group are enough.
 // v0.4.0: add a minimal, explicit "waiting for user" banner for handoff/resume.
 
+function ensureBorderStyle() {
+  if (BORDER_STYLE) return;
+  const style = document.createElement('style');
+  style.id = '__openclaw_border_style__';
+  style.textContent = `
+@keyframes openclawGlow {
+  0% { box-shadow: 0 0 0 4px rgba(200, 18, 18, 0.60), 0 0 22px rgba(255, 80, 80, 0.18); }
+  50% { box-shadow: 0 0 0 5px rgba(255, 70, 70, 0.70), 0 0 34px rgba(255, 120, 120, 0.22); }
+  100% { box-shadow: 0 0 0 4px rgba(200, 18, 18, 0.60), 0 0 22px rgba(255, 80, 80, 0.18); }
+}
+
+html.__openclaw_controlled__ {
+  outline: none !important;
+}
+
+html.__openclaw_controlled__::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 2147483646;
+  border-radius: 10px;
+
+  /* Border (slightly thicker, branded red gradient) */
+  border: 5px solid rgba(200, 18, 18, 0.85);
+  border-image: linear-gradient(135deg, rgba(255, 80, 80, 0.95), rgba(200, 18, 18, 0.85), rgba(255, 120, 120, 0.65)) 1;
+
+  animation: openclawGlow 2.2s ease-in-out infinite;
+}
+`;
+  document.documentElement.appendChild(style);
+  BORDER_STYLE = style;
+}
+
+function removeBorderStyle() {
+  try {
+    BORDER_STYLE?.remove();
+  } catch {}
+  BORDER_STYLE = null;
+}
+
 function setControlled(on: boolean) {
   IS_CONTROLLED = on;
   if (on) {
     startKeepalive();
     try {
-      document.documentElement.style.outline = '3px solid rgba(200, 18, 18, 0.95)';
-      document.documentElement.style.outlineOffset = '-3px';
+      ensureBorderStyle();
+      document.documentElement.classList.add('__openclaw_controlled__');
     } catch {}
   } else {
     stopKeepalive();
     try {
-      document.documentElement.style.outline = '';
-      document.documentElement.style.outlineOffset = '';
+      document.documentElement.classList.remove('__openclaw_controlled__');
+      removeBorderStyle();
     } catch {}
     setWaiting(false);
   }

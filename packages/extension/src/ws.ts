@@ -34,6 +34,10 @@ export class RelayWS {
     };
     ws.onclose = () => {
       this.state = { status: 'disconnected' };
+      // background will decide whether to reconnect
+      try {
+        chrome.runtime.sendMessage({ t: 'ws_closed' });
+      } catch {}
     };
     ws.onerror = () => {
       this.state = { status: 'disconnected', lastError: 'WebSocket error' };

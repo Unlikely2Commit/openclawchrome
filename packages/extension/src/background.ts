@@ -4,6 +4,53 @@ import { appendAudit, getSettings, setSettings } from './storage';
 
 const relay = new RelayWS();
 
+let reconnectTimer: number | null = null;
+let reconnectAttempt = 0;
+
+async function scheduleReconnect(reason = 'unknown') {
+  const settings = await getSettings();
+  if (!settings.httpBase || !settings.token) return;
+
+  // Backoff: 0.5s → 1s → 2s → 4s → 8s (cap)
+  const delay = Math.min(8000, 500 * Math.pow(2, reconnectAttempt));
+  reconnectAttempt = Math.min(reconnectAttempt + 1, 6);
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    try {
+      const httpBase = settings.httpBase;
+      const token = settings.token;
+      if (!httpBase || !token) return;
+      const wsUrl = wsBaseFromHttp(httpBase);
+      relay.connect({ wsUrl, token, clientId: settings.clientId });
+      void updateBadge();
+    } catch {
+      // try again next wake
+    }
+  }, delay) as unknown as number;
+
+  // Logged as a normal action for now (audit types are intentionally narrow in v0.2)
+  await appendAudit({ ts: Date.now(), kind: 'action', detail: { kind: 'ws_reconnect_scheduled', delayMs: delay, reason } });
+}
+
+async function ensureConnected() {
+  const settings = await getSettings();
+  if (!settings.httpBase || !settings.token) return;
+  if (relay.state.status === 'connected' || relay.state.status === 'connecting') return;
+
+  const httpBase = settings.httpBase;
+  const token = settings.token;
+  if (!httpBase || !token) return;
+  const wsUrl = wsBaseFromHttp(httpBase);
+  relay.connect({ wsUrl, token, clientId: settings.clientId });
+  await updateBadge();
+}
+
 async function updateBadge() {
   const settings = await getSettings();
   const text = relay.state.status === 'connected' ? 'ON' : '';
@@ -122,6 +169,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'popup_get_state') {
       const settings = await getSettings();
+      // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
+      void ensureConnected();
       sendResponse({
         ws: relay.state,
         settings
@@ -138,8 +187,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg?.t === 'popup_connect') {
       const settings = await getSettings();
-      if (!settings.httpBase || !settings.token) throw new Error('Missing httpBase/token; pair first');
+      if (!settings.httpBase || !settings.token) throw new Error('Missing relay URL / pairing token; pair first');
       const wsUrl = wsBaseFromHttp(settings.httpBase);
+      reconnectAttempt = 0;
       relay.connect({ wsUrl, token: settings.token, clientId: settings.clientId });
       await updateBadge();
       sendResponse({ ok: true });
@@ -173,6 +223,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
+    if (msg?.t === 'ws_closed') {
+      void scheduleReconnect('ws_closed');
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (msg?.t === 'tab_event') {
       // from content script
       const tabId = sender.tab?.id;
@@ -193,6 +249,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.storage.onChanged.addListener(() => {
   void updateBadge();
+  void ensureConnected();
 });
 
+chrome.runtime.onStartup?.addListener(() => {
+  void ensureConnected();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void ensureConnected();
+});
+
+void ensureConnected();
 void updateBadge();

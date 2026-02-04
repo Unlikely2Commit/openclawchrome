@@ -4,3 +4,5 @@ dist/
 *.log
 .env
 .env.*
+.openclaw-relay-fingerprint
+packages/relay/.openclaw-relay-fingerprint

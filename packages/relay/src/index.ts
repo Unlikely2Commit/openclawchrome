@@ -3,9 +3,20 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 import type WebSocket from 'ws';
-import type { Envelope, ClientType, PairRequestResponse, PairPollResponse, RelayFingerprint } from '@openclaw/shared';
+import type {
+  Envelope,
+  ClientType,
+  PairRequestResponse,
+  PairPollResponse,
+  RelayFingerprint,
+  AttachTab,
+  DetachTab,
+  TabEvent,
+  ActionResult
+} from '@openclaw/shared';
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -34,6 +45,73 @@ const byUserCode = new Map<string, PendingPair>(); // userCode -> entry
 // Active websocket connections per token.
 type Conn = { ws: WebSocket; client: ClientType; clientId: string };
 const connsByToken = new Map<string, { extension?: Conn; agent?: Conn }>();
+
+// --- Dev visibility (Model 2 UX support) ---
+
+type ControlledTab = {
+  tabId: number;
+  url: string;
+  title?: string;
+  updatedAt: number;
+};
+
+type LastState = {
+  controlledTab?: ControlledTab;
+  lastActionResult?: { env: Envelope<ActionResult>; at: number };
+  lastTabEvent?: { env: Envelope<TabEvent>; at: number };
+  lastAttach?: { env: Envelope<AttachTab>; at: number };
+  lastDetach?: { env: Envelope<DetachTab>; at: number };
+};
+
+const lastByToken = new Map<string, LastState>();
+const devEventsByToken = new Map<string, EventEmitter>();
+
+function getEmitter(token: string): EventEmitter {
+  let em = devEventsByToken.get(token);
+  if (!em) {
+    em = new EventEmitter();
+    em.setMaxListeners(100);
+    devEventsByToken.set(token, em);
+  }
+  return em;
+}
+
+function recordToAgent(token: string, env: Envelope) {
+  const last = lastByToken.get(token) || {};
+  const at = Date.now();
+
+  if (env.msg?.t === 'attach_tab') {
+    const m = env.msg as AttachTab;
+    last.controlledTab = { tabId: m.tabId, url: m.url, title: m.title, updatedAt: at };
+    last.lastAttach = { env: env as any, at };
+  }
+
+  if (env.msg?.t === 'detach_tab') {
+    const m = env.msg as DetachTab;
+    if (last.controlledTab?.tabId === m.tabId) last.controlledTab = undefined;
+    last.lastDetach = { env: env as any, at };
+  }
+
+  if (env.msg?.t === 'tab_event') {
+    const m = env.msg as TabEvent;
+    last.lastTabEvent = { env: env as any, at };
+    // keep controlled tab metadata fresh if we can
+    if (last.controlledTab && last.controlledTab.tabId === m.tabId) {
+      if (m.url) last.controlledTab.url = m.url;
+      if (m.title) last.controlledTab.title = m.title;
+      last.controlledTab.updatedAt = at;
+    }
+  }
+
+  if (env.msg?.t === 'action_result') {
+    last.lastActionResult = { env: env as any, at };
+  }
+
+  lastByToken.set(token, last);
+
+  // Emit for SSE subscribers
+  getEmitter(token).emit('to-agent', env);
+}
 
 function rand(len = 16): string {
   return crypto.randomBytes(len).toString('hex');
@@ -219,6 +297,68 @@ app.post('/pair/verify', (req, res) => {
   res.type('text').send(`Paired. You may return to the extension and click Connect WS.\nToken: ${entry.token.slice(0, 6)}…`);
 });
 
+// Debug endpoint to see which tokens are currently connected (do not expose publicly).
+app.get('/debug/conns', (_req, res) => {
+  const rows = Array.from(connsByToken.entries()).map(([token, b]) => ({
+    token,
+    tokenPrefix: token.slice(0, 6),
+    hasExtension: Boolean(b.extension),
+    hasAgent: Boolean(b.agent),
+    extensionClientId: b.extension?.clientId,
+    agentClientId: b.agent?.clientId
+  }));
+  res.json({ ok: true, count: rows.length, rows });
+});
+
+// --- Dev endpoints: simulate/subscribe as an agent without running a separate client ---
+
+// SSE stream of all envelopes routed TO agent for a given token.
+app.get('/dev/agent/subscribe', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).json({ error: 'token required' });
+
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no'
+  });
+
+  const em = getEmitter(token);
+  const onEnv = (env: Envelope) => {
+    res.write(`data: ${JSON.stringify(env)}\n\n`);
+  };
+  em.on('to-agent', onEnv);
+
+  // initial ping
+  res.write(`event: ready\ndata: ${JSON.stringify({ ok: true, tokenPrefix: token.slice(0, 6) })}\n\n`);
+
+  req.on('close', () => {
+    em.off('to-agent', onEnv);
+  });
+});
+
+app.get('/dev/controlled', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).json({ error: 'token required' });
+  const last = lastByToken.get(token) || {};
+  res.json({ ok: true, tokenPrefix: token.slice(0, 6), controlledTab: last.controlledTab || null });
+});
+
+app.get('/dev/last_action_result', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).json({ error: 'token required' });
+  const last = lastByToken.get(token) || {};
+  res.json({ ok: true, tokenPrefix: token.slice(0, 6), lastActionResult: last.lastActionResult || null });
+});
+
+app.get('/dev/last', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).json({ error: 'token required' });
+  const last = lastByToken.get(token) || {};
+  res.json({ ok: true, tokenPrefix: token.slice(0, 6), ...last });
+});
+
 // Agent simulator endpoint: send a message envelope to extension for a token.
 app.post('/agent/send', (req, res) => {
   const token = String(req.query.token || req.body?.token || '');
@@ -284,6 +424,9 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (env.token !== token) return;
+
+    // Record anything headed to agent (this makes action_result round-trips visible).
+    if (env.to === 'agent') recordToAgent(token, env);
 
     const b = connsByToken.get(token);
     const dest = env.to === 'agent' ? b?.agent : b?.extension;

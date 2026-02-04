@@ -4,21 +4,24 @@ export type Settings = {
   clientId: string;
   connected?: boolean;
   allowActions: boolean;
-  // allowlist removed for v0.2.2 testing; may reintroduce later
-  attachedTabIds: number[];
+
+  /**
+   * v0.3.0 (Model 2): tabs are controlled iff they are inside an "OpenClaw" tab group.
+   * We keep attachedTabIds only for backwards compatibility/migrations; it is no longer used.
+   */
+  attachedTabIds?: number[];
 };
 
 export type AuditEntry = {
   ts: number;
-  kind: 'action' | 'open_tab' | 'security_block';
+  kind: 'action' | 'open_tab' | 'security_block' | 'tab_control';
   tabId?: number;
   detail: Record<string, unknown>;
 };
 
 const DEFAULTS: Settings = {
   clientId: `ext_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`,
-  allowActions: false,
-  attachedTabIds: []
+  allowActions: false
 };
 
 export async function getSettings(): Promise<Settings> {

@@ -18,13 +18,6 @@ async function rpc(msg: any): Promise<any> {
   return await chrome.runtime.sendMessage(msg);
 }
 
-function normalizeAllowlist(text: string): string[] {
-  return text
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 function detectPairMeta(): PairMeta {
   const ua = navigator.userAgent || '';
 
@@ -43,29 +36,25 @@ function detectPairMeta(): PairMeta {
   return { browser, os, userAgent: ua };
 }
 
-async function getActiveTabId(): Promise<number | null> {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const t = tabs?.[0];
-    return typeof t?.id === 'number' ? t.id : null;
-  } catch {
-    return null;
-  }
-}
-
-function setStatusPill(wsStatus: string) {
+function setStatusPill(ws: { status?: string; lastError?: string } | undefined) {
   const dot = qs<HTMLSpanElement>('statusDot');
   const text = qs<HTMLSpanElement>('statusText');
+  const pill = qs<HTMLDivElement>('statusPill');
 
-  const connected = wsStatus === 'connected';
+  const status = ws?.status || 'disconnected';
 
-  dot.classList.remove('good', 'bad');
-  if (connected) {
+  dot.classList.remove('good', 'bad', 'warn');
+  pill.title = ws?.lastError ? `Last error: ${ws.lastError}` : '';
+
+  if (status === 'connected') {
     dot.classList.add('good');
     text.textContent = 'Connected';
+  } else if (status === 'connecting') {
+    dot.classList.add('warn');
+    text.textContent = 'Connecting…';
   } else {
     dot.classList.add('bad');
-    text.textContent = 'Disconnected';
+    text.textContent = ws?.lastError ? 'Disconnected (error)' : 'Disconnected';
   }
 }
 
@@ -113,6 +102,12 @@ async function copyText(text: string): Promise<boolean> {
 let lastHttpBaseDraft = '';
 let isEditingHttpBase = false;
 
+function formatTabTitle(title?: string): string {
+  const t = (title || '').trim();
+  if (!t) return '(untitled)';
+  return t.length > 52 ? `${t.slice(0, 52)}…` : t;
+}
+
 async function refresh() {
   const state: PopupState = await rpc({ t: 'popup_get_state' });
   const s = state.settings;
@@ -124,8 +119,7 @@ async function refresh() {
     lastHttpBaseDraft = httpEl.value;
   }
 
-  const wsStatus = state.ws?.status || 'disconnected';
-  setStatusPill(wsStatus);
+  setStatusPill(state.ws);
 
   // Build info (best-effort)
   try {
@@ -135,28 +129,25 @@ async function refresh() {
     // ignore
   }
 
-  // Attach toggle state
-  const activeTabId = await getActiveTabId();
-  const attached = (s.attachedTabIds || []) as number[];
-  const isActiveAttached = activeTabId != null && attached.includes(activeTabId);
-  const attachToggle = qs<HTMLInputElement>('attachToggle');
-  attachToggle.checked = isActiveAttached;
+  // Controlled tab info (Model 2)
+  const c = state.controlled || {};
+  const groupInfo = qs('groupInfo');
+  const tabInfo = qs('tabInfo');
+  const tabHost = qs('tabHost');
+  const detachBtn = qs<HTMLButtonElement>('detachBtn');
 
-  const attachDesc = qs('attachDesc');
-  if (activeTabId == null) {
-    attachDesc.textContent = 'No active tab detected.';
-    attachToggle.disabled = true;
-  } else {
-    attachToggle.disabled = false;
-    attachDesc.textContent = isActiveAttached ? `Tab ${activeTabId} is attached.` : `Tab ${activeTabId} is not attached.`;
-  }
+  const inGroup = !!c.inGroup;
+  const gTitle = c.groupTitle || (inGroup ? 'OpenClaw' : '—');
+  const gColor = c.groupColor ? String(c.groupColor) : '';
+  groupInfo.textContent = inGroup ? `${gTitle}${gColor ? ` (${gColor})` : ''}` : '(not in OpenClaw group)';
 
-  const attachedList = qs('attachedList');
-  attachedList.textContent = attached.length ? `Attached tabs: ${attached.join(', ')}` : 'No tabs attached.';
+  tabInfo.textContent = c.activeTabId ? `#${c.activeTabId} — ${formatTabTitle(c.title)}` : 'No active tab';
+  tabHost.textContent = c.hostname || '—';
+
+  detachBtn.disabled = !c.activeTabId || !inGroup;
 
   // Security
   qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
-  // allowlist removed for v0.2.2 testing
 
   // Audit
   const list = qs('auditList');
@@ -244,7 +235,7 @@ async function pairFlow() {
     const p = await r2.json();
     if (p.status === 'verified') {
       await rpc({ t: 'popup_set_settings', patch: { token: p.token } });
-      setPairInfo('Paired. Click Connect.');
+      setPairInfo('Paired. Background will try to connect automatically (or click Connect).');
       await refresh();
       return;
     }
@@ -255,9 +246,7 @@ async function pairFlow() {
 
 async function main() {
   // Pair
-  qs('pairBtn').addEventListener('click', () =>
-    pairFlow().catch((e) => setPairInfo(String(e.message || e), true)),
-  );
+  qs('pairBtn').addEventListener('click', () => pairFlow().catch((e) => setPairInfo(String(e.message || e), true)));
 
   // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
@@ -275,6 +264,12 @@ async function main() {
     await refresh();
   });
 
+  // Detach
+  qs('detachBtn').addEventListener('click', async () => {
+    await rpc({ t: 'popup_detach_active_tab' });
+    await refresh();
+  });
+
   // Copy pairing command
   qs<HTMLButtonElement>('copyPairCmd').addEventListener('click', async (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
@@ -286,32 +281,12 @@ async function main() {
     setTimeout(() => (btn.textContent = prev), 900);
   });
 
-  // Attach toggle
-  qs<HTMLInputElement>('attachToggle').addEventListener('change', async (e) => {
-    const wantAttached = (e.target as HTMLInputElement).checked;
-    const activeTabId = await getActiveTabId();
-    if (activeTabId == null) {
-      await refresh();
-      return;
-    }
-
-    if (wantAttached) {
-      await rpc({ t: 'attach_current_tab' });
-    } else {
-      await rpc({ t: 'detach_tab', tabId: activeTabId });
-    }
-
-    await refresh();
-  });
-
   // Security settings
   qs<HTMLInputElement>('allowActions').addEventListener('change', async (e) => {
     const allowActions = (e.target as HTMLInputElement).checked;
     await rpc({ t: 'popup_set_settings', patch: { allowActions } });
     await refresh();
   });
-
-  // allowlist removed for v0.2.2 testing
 
   // Relay URL: avoid wiping mid-typing; save on blur (and allow manual edit).
   const httpEl = qs<HTMLInputElement>('httpBase');
@@ -320,7 +295,6 @@ async function main() {
     lastHttpBaseDraft = httpEl.value;
   });
   httpEl.addEventListener('input', () => {
-    // keep local draft; do not persist yet
     lastHttpBaseDraft = httpEl.value;
   });
   httpEl.addEventListener('blur', async () => {

@@ -4,6 +4,9 @@ import { appendAudit, getSettings, setSettings } from './storage';
 
 const relay = new RelayWS();
 
+const GROUP_TITLE = 'OpenClaw';
+const GROUP_COLOR: chrome.tabGroups.ColorEnum = 'red';
+
 let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
 
@@ -20,21 +23,21 @@ async function scheduleReconnect(reason = 'unknown') {
     reconnectTimer = null;
   }
 
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    try {
-      const httpBase = settings.httpBase;
-      const token = settings.token;
-      if (!httpBase || !token) return;
-      const wsUrl = wsBaseFromHttp(httpBase);
-      relay.connect({ wsUrl, token, clientId: settings.clientId });
-      void updateBadge();
-    } catch {
-      // try again next wake
-    }
-  }, delay) as unknown as number;
+  reconnectTimer =
+    (setTimeout(() => {
+      reconnectTimer = null;
+      try {
+        const httpBase = settings.httpBase;
+        const token = settings.token;
+        if (!httpBase || !token) return;
+        const wsUrl = wsBaseFromHttp(httpBase);
+        relay.connect({ wsUrl, token, clientId: settings.clientId });
+        void updateBadge();
+      } catch {
+        // try again next wake
+      }
+    }, delay) as unknown as number) ?? null;
 
-  // Logged as a normal action for now (audit types are intentionally narrow in v0.2)
   await appendAudit({ ts: Date.now(), kind: 'action', detail: { kind: 'ws_reconnect_scheduled', delayMs: delay, reason } });
 }
 
@@ -43,22 +46,22 @@ async function ensureConnected() {
   if (!settings.httpBase || !settings.token) return;
   if (relay.state.status === 'connected' || relay.state.status === 'connecting') return;
 
-  const httpBase = settings.httpBase;
-  const token = settings.token;
-  if (!httpBase || !token) return;
-  const wsUrl = wsBaseFromHttp(httpBase);
-  relay.connect({ wsUrl, token, clientId: settings.clientId });
+  const wsUrl = wsBaseFromHttp(settings.httpBase);
+  reconnectAttempt = 0;
+  relay.connect({ wsUrl, token: settings.token, clientId: settings.clientId });
   await updateBadge();
 }
 
 async function updateBadge() {
   const settings = await getSettings();
-  const text = relay.state.status === 'connected' ? 'ON' : '';
-  await chrome.action.setBadgeText({ text });
-  await chrome.action.setBadgeBackgroundColor({ color: relay.state.status === 'connected' ? '#2e7d32' : '#777' });
+  const connected = relay.state.status === 'connected';
+
   if (settings.allowActions) {
-    await chrome.action.setBadgeText({ text: relay.state.status === 'connected' ? 'ON*' : '*' });
+    await chrome.action.setBadgeText({ text: connected ? 'ON*' : '*' });
     await chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
+  } else {
+    await chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
+    await chrome.action.setBadgeBackgroundColor({ color: connected ? '#2e7d32' : '#777' });
   }
 }
 
@@ -69,6 +72,89 @@ function wsBaseFromHttp(httpBase: string): string {
   u.pathname = '/ws';
   u.search = '';
   return u.toString();
+}
+
+async function isControlledTab(tabId: number): Promise<boolean> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const gid = (tab as any).groupId as number | undefined;
+    if (typeof gid !== 'number' || gid < 0) return false;
+    const g = await chrome.tabGroups.get(gid);
+    return g?.title === GROUP_TITLE;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOpenClawGroupInWindow(windowId: number): Promise<number | null> {
+  try {
+    const groups = await chrome.tabGroups.query({ windowId, title: GROUP_TITLE });
+    if (groups?.length) return groups[0]!.id;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function addTabToOpenClawGroup(tabId: number): Promise<number | null> {
+  const tab = await chrome.tabs.get(tabId);
+  const windowId = tab.windowId;
+
+  const existing = await ensureOpenClawGroupInWindow(windowId);
+  if (existing != null) {
+    await chrome.tabs.group({ groupId: existing, tabIds: [tabId] });
+    // best-effort: enforce label/color
+    try {
+      await chrome.tabGroups.update(existing, { title: GROUP_TITLE, color: GROUP_COLOR });
+    } catch {}
+    return existing;
+  }
+
+  // Create by grouping the tab.
+  const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+  try {
+    await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: GROUP_COLOR });
+  } catch {}
+  return groupId;
+}
+
+async function removeTabFromGroup(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.ungroup([tabId]);
+  } catch {
+    // ignore
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, { t: 'set_controlled', on: false });
+  } catch {
+    // ignore
+  }
+}
+
+async function ensureContentScript(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  } catch {
+    // ignore; sendMessage will surface errors
+  }
+}
+
+async function ensureControlled(tabId: number): Promise<void> {
+  await addTabToOpenClawGroup(tabId);
+  await ensureContentScript(tabId);
+  try {
+    await chrome.tabs.sendMessage(tabId, { t: 'set_controlled', on: true });
+  } catch {
+    // ignore
+  }
+
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.url) relay.send({ t: 'attach_tab', tabId, url: tab.url, title: tab.title }, 'agent');
+    await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId, detail: { kind: 'controlled', url: tab.url, title: tab.title } });
+  } catch {
+    // ignore
+  }
 }
 
 relay.onMessage(async (env: Envelope) => {
@@ -85,6 +171,8 @@ async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: s
   const settings = await getSettings();
   if (!settings.allowActions) return { ok: false, reason: 'Allow Actions is disabled' };
 
+  if (!(await isControlledTab(tabId))) return { ok: false, reason: 'Tab is not in the OpenClaw tab group' };
+
   const tab = await chrome.tabs.get(tabId);
   const urlStr = tab.url || '';
   try {
@@ -93,19 +181,9 @@ async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: s
     return { ok: false, reason: 'Tab URL is not a valid URL', url: urlStr };
   }
 
-  // v0.2.2: allowlist removed for faster testing; actions are allowed on any valid URL
-  // as long as Allow Actions is enabled.
+  // v0.3.0: no allowlist (experimental); actions are allowed on any valid URL
+  // as long as Allow Actions is enabled AND the tab is controlled (in the OpenClaw group).
   return { ok: true, url: urlStr };
-}
-
-async function ensureContentScript(tabId: number): Promise<void> {
-  // Declarative content scripts don't always inject into already-open tabs.
-  // Ensure it's present by executing our built content bundle.
-  try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  } catch {
-    // ignore; sendMessage will surface errors
-  }
 }
 
 async function handleActionRequest(req: ActionRequest) {
@@ -121,7 +199,7 @@ async function handleActionRequest(req: ActionRequest) {
       if (!req.url) throw new Error('navigate requires url');
       await chrome.tabs.update(req.tabId, { url: req.url });
     } else {
-      // Ensure content script exists (especially for tabs opened before install/update)
+      // Ensure content script exists
       await ensureContentScript(req.tabId);
       try {
         await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
@@ -147,7 +225,6 @@ async function handleActionRequest(req: ActionRequest) {
 }
 
 async function handleOpenTabRequest(req: OpenTabRequest) {
-  // Opening a tab is also an action; for v0.2.2 testing we require only Allow Actions.
   const settings = await getSettings();
   if (!settings.allowActions) {
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
@@ -164,12 +241,9 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
     const tab = await chrome.tabs.create({ url: req.url, active: true });
     await appendAudit({ ts: Date.now(), kind: 'open_tab', tabId: tab.id, detail: { url: req.url } });
 
-    if (req.attach && tab.id) {
-      const next = await setSettings({ attachedTabIds: Array.from(new Set([...(settings.attachedTabIds || []), tab.id])) });
-      // notify agent
-      relay.send({ t: 'attach_tab', tabId: tab.id, url: tab.url || req.url, title: tab.title }, 'agent');
-      await updateBadge();
-      void next;
+    // Model 2: agent-opened tabs are controlled by default.
+    if (tab.id) {
+      await ensureControlled(tab.id);
     }
 
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: true, tabId: tab.id }, 'agent');
@@ -179,16 +253,71 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
   }
 }
 
+async function getControlledInfoForActiveTab(): Promise<{
+  activeTabId: number | null;
+  inGroup: boolean;
+  groupId?: number;
+  groupTitle?: string;
+  groupColor?: string;
+  title?: string;
+  url?: string;
+  hostname?: string;
+  lastError?: string;
+}> {
+  let activeTabId: number | null = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id != null) activeTabId = tab.id;
+
+    if (!tab?.id) return { activeTabId, inGroup: false };
+    const gid = (tab as any).groupId as number | undefined;
+    if (typeof gid !== 'number' || gid < 0) {
+      return { activeTabId, inGroup: false, title: tab.title, url: tab.url, hostname: safeHostname(tab.url) };
+    }
+    const g = await chrome.tabGroups.get(gid);
+    const inGroup = g?.title === GROUP_TITLE;
+    return {
+      activeTabId,
+      inGroup,
+      groupId: gid,
+      groupTitle: g?.title,
+      groupColor: (g as any)?.color,
+      title: tab.title,
+      url: tab.url,
+      hostname: safeHostname(tab.url)
+    };
+  } catch {
+    return { activeTabId, inGroup: false };
+  }
+}
+
+function safeHostname(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const u = new URL(url);
+    return u.hostname;
+  } catch {
+    return undefined;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'popup_get_state') {
-      const settings = await getSettings();
       // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
       void ensureConnected();
-      sendResponse({
-        ws: relay.state,
-        settings
-      });
+
+      // Model 2: opening popup implicitly controls the active tab by placing it in the OpenClaw group.
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id != null) await ensureControlled(tab.id);
+      } catch {
+        // ignore
+      }
+
+      const settings = await getSettings();
+      const controlled = await getControlledInfoForActiveTab();
+      sendResponse({ ws: relay.state, settings, controlled });
       return;
     }
 
@@ -217,27 +346,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    if (msg?.t === 'attach_current_tab') {
+    if (msg?.t === 'popup_detach_active_tab') {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id || !tab.url) throw new Error('No active tab');
-
-      // Ensure our content script exists in this tab (important for already-open tabs).
-      await ensureContentScript(tab.id);
-
-      const settings = await getSettings();
-      const attached = Array.from(new Set([...(settings.attachedTabIds || []), tab.id]));
-      await setSettings({ attachedTabIds: attached });
-      relay.send({ t: 'attach_tab', tabId: tab.id, url: tab.url, title: tab.title }, 'agent');
-      sendResponse({ ok: true, attachedTabIds: attached });
-      return;
-    }
-
-    if (msg?.t === 'detach_tab') {
-      const settings = await getSettings();
-      const attached = (settings.attachedTabIds || []).filter((id) => id !== msg.tabId);
-      await setSettings({ attachedTabIds: attached });
-      relay.send({ t: 'detach_tab', tabId: msg.tabId }, 'agent');
-      sendResponse({ ok: true, attachedTabIds: attached });
+      if (!tab?.id) throw new Error('No active tab');
+      await removeTabFromGroup(tab.id);
+      relay.send({ t: 'detach_tab', tabId: tab.id }, 'agent');
+      await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId: tab.id, detail: { kind: 'detached' } });
+      sendResponse({ ok: true });
       return;
     }
 
@@ -248,11 +363,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg?.t === 'tab_event') {
-      // from content script
       const tabId = sender.tab?.id;
       if (!tabId) return;
-      const settings = await getSettings();
-      if (!(settings.attachedTabIds || []).includes(tabId)) return;
+      if (!(await isControlledTab(tabId))) return;
       relay.send({ ...(msg.event as Message), tabId } as any, 'agent');
       return;
     }

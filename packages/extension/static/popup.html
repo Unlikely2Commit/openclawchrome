@@ -14,7 +14,6 @@
         --muted: rgba(233, 236, 242, 0.72);
         --muted2: rgba(233, 236, 242, 0.55);
         --red: #ff2d2d;
-        --red2: #ff4b4b;
         --good: #24d19c;
         --warn: #f59f00;
         --bad: #ff2d2d;
@@ -75,6 +74,7 @@
       }
       .dot.good { background: var(--good); box-shadow: 0 0 0 3px rgba(36, 209, 156, 0.14); }
       .dot.bad { background: var(--bad); box-shadow: 0 0 0 3px rgba(255, 45, 45, 0.14); }
+      .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(245, 159, 0, 0.14); }
 
       .card {
         border: 1px solid var(--border);
@@ -95,7 +95,7 @@
 
       label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 
-      input[type=text], textarea {
+      input[type=text] {
         width: 100%;
         border-radius: 12px;
         border: 1px solid var(--border);
@@ -104,8 +104,7 @@
         padding: 10px 10px;
         outline: none;
       }
-      input[type=text]::placeholder, textarea::placeholder { color: rgba(233,236,242,0.35); }
-      textarea { height: 70px; resize: vertical; font-family: var(--mono); }
+      input[type=text]::placeholder { color: rgba(233,236,242,0.35); }
 
       .row { display: flex; align-items: center; gap: 8px; }
       .row > * { flex: 1; }
@@ -271,7 +270,7 @@
           <div class="name">OpenClaw</div>
           <div class="sub">Browser Connector</div>
         </div>
-        <div class="status" id="statusPill">
+        <div class="status" id="statusPill" title="">
           <span class="dot" id="statusDot"></span>
           <span id="statusText">Loading…</span>
         </div>
@@ -307,18 +306,18 @@
       </div>
 
       <div class="card">
-        <h3>Tab</h3>
-        <div class="toggle">
-          <div class="left">
-            <div class="name">Attach current tab</div>
-            <div class="desc" id="attachDesc">Attach the active tab to stream events.</div>
-          </div>
-          <label style="margin:0; display:flex; align-items:center; gap:8px;">
-            <input class="switch-input" type="checkbox" id="attachToggle" />
-            <span class="switch" aria-hidden="true"></span>
-          </label>
+        <h3>Controlled Tab (Model 2)</h3>
+        <div class="hint" id="controlledHint">Opening this popup automatically adds the active tab to the “OpenClaw” tab group.</div>
+
+        <div style="height:10px"></div>
+        <div class="kv">
+          <div class="k">Group</div><div class="v"><span class="mono" id="groupInfo">—</span></div>
+          <div class="k">Tab</div><div class="v"><span id="tabInfo">—</span></div>
+          <div class="k">Site</div><div class="v"><span class="mono" id="tabHost">—</span></div>
         </div>
-        <div class="hint" id="attachedList" style="margin-top:10px"></div>
+
+        <div style="height:10px"></div>
+        <button class="btn secondary" id="detachBtn" title="Remove the active tab from the OpenClaw group">Stop / Detach active tab</button>
       </div>
 
       <div class="card">
@@ -326,7 +325,7 @@
         <div class="toggle">
           <div class="left">
             <div class="name">Allow Actions</div>
-            <div class="desc">For testing: allow click/type/navigate/scroll on any open tab once paired.</div>
+            <div class="desc">For testing: allow click/type/navigate/scroll on controlled tabs (OpenClaw group) once paired.</div>
           </div>
           <label style="margin:0; display:flex; align-items:center; gap:8px;">
             <input class="switch-input" type="checkbox" id="allowActions" />
@@ -334,7 +333,7 @@
           </label>
         </div>
 
-        <div class="hint" style="margin-top:10px">Domain allowlist is temporarily disabled for faster testing. We’ll reintroduce it as an advanced safety feature.</div>
+        <div class="hint" style="margin-top:10px">Domain allowlist is temporarily disabled for faster testing. Actions are limited to tabs inside the OpenClaw tab group.</div>
       </div>
 
       <div class="card">

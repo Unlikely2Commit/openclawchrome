@@ -17,11 +17,9 @@ type ControlledInfo = {
 };
 
 type PopupGetStateResponse = {
-  ok?: boolean;
-  error?: string;
-  ws?: WSState;
-  settings?: Settings;
-  controlled?: ControlledInfo;
+  ws: WSState;
+  settings: Settings;
+  controlled: ControlledInfo;
 };
 
 type PairMeta = {
@@ -198,8 +196,7 @@ async function renderAudit() {
 
 async function refresh() {
   const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
-  if (state && state.ok === false) throw new Error(state.error || 'popup_get_state failed');
-  const s = state.settings || ({} as Settings);
+  const s = state.settings;
 
   // Don't clobber the relay URL while the user is typing.
   const httpEl = qs<HTMLInputElement>('httpBase');
@@ -221,7 +218,7 @@ async function refresh() {
   }
 
   // Controlled tab info (Model 2)
-  const c: ControlledInfo = (state.controlled || { activeTabId: null, inGroup: false }) as ControlledInfo;
+  const c = state.controlled || {};
   const groupInfo = qs('groupInfo');
   const tabInfo = qs('tabInfo');
   const tabHost = qs('tabHost');
@@ -268,9 +265,7 @@ async function pairFlow() {
   // Save httpBase immediately.
   await rpc({ t: 'popup_set_settings', patch: { httpBase } });
 
-  const st = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
-  if (!st.settings?.clientId) throw new Error('Missing clientId (popup_get_state failed)');
-  const clientId = st.settings.clientId;
+  const clientId = (await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' })).settings.clientId;
 
   const r1 = await fetch(new URL('/pair/request', httpBase).toString(), {
     method: 'POST',

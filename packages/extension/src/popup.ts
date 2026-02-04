@@ -148,7 +148,7 @@ async function refresh() {
 
   // Security
   qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
-  qs<HTMLTextAreaElement>('allowlist').value = (s.allowlist || []).join('\n');
+  // allowlist removed for v0.2.2 testing
 
   // Audit
   const list = qs('auditList');
@@ -297,11 +297,7 @@ async function main() {
     await refresh();
   });
 
-  qs<HTMLTextAreaElement>('allowlist').addEventListener('change', async (e) => {
-    const allowlist = normalizeAllowlist((e.target as HTMLTextAreaElement).value);
-    await rpc({ t: 'popup_set_settings', patch: { allowlist } });
-    await refresh();
-  });
+  // allowlist removed for v0.2.2 testing
 
   // Relay URL save on change
   qs<HTMLInputElement>('httpBase').addEventListener('change', async (e) => {

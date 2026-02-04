@@ -326,7 +326,7 @@
         <div class="toggle">
           <div class="left">
             <div class="name">Allow Actions</div>
-            <div class="desc">Enable remote click/type/navigate on allowed domains.</div>
+            <div class="desc">For testing: allow click/type/navigate/scroll on any open tab once paired.</div>
           </div>
           <label style="margin:0; display:flex; align-items:center; gap:8px;">
             <input class="switch-input" type="checkbox" id="allowActions" />
@@ -334,10 +334,7 @@
           </label>
         </div>
 
-        <div style="height:10px"></div>
-        <label for="allowlist">Domain allowlist</label>
-        <textarea id="allowlist" placeholder="example.com\napp.example.com"></textarea>
-        <div class="hint">Actions run only when Allow Actions is enabled and the current tab hostname matches this allowlist.</div>
+        <div class="hint" style="margin-top:10px">Domain allowlist is temporarily disabled for faster testing. We’ll reintroduce it as an advanced safety feature.</div>
       </div>
 
       <div class="card">

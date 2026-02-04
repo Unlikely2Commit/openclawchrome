@@ -87,16 +87,14 @@ async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: s
 
   const tab = await chrome.tabs.get(tabId);
   const urlStr = tab.url || '';
-  let hostname = '';
   try {
-    hostname = new URL(urlStr).hostname;
+    new URL(urlStr);
   } catch {
     return { ok: false, reason: 'Tab URL is not a valid URL', url: urlStr };
   }
 
-  const allow = settings.allowlist || [];
-  const ok = allow.some((d) => d === hostname || (d.startsWith('*.') && hostname.endsWith(d.slice(1))));
-  if (!ok) return { ok: false, reason: `Hostname not in allowlist: ${hostname}`, url: urlStr };
+  // v0.2.2: allowlist removed for faster testing; actions are allowed on any valid URL
+  // as long as Allow Actions is enabled.
   return { ok: true, url: urlStr };
 }
 
@@ -126,23 +124,16 @@ async function handleActionRequest(req: ActionRequest) {
 }
 
 async function handleOpenTabRequest(req: OpenTabRequest) {
-  // Opening a tab is also an action; enforce allowActions + allowlist by URL.
+  // Opening a tab is also an action; for v0.2.2 testing we require only Allow Actions.
   const settings = await getSettings();
   if (!settings.allowActions) {
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
     return;
   }
-  let hostname = '';
   try {
-    hostname = new URL(req.url).hostname;
+    new URL(req.url);
   } catch {
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Invalid URL' }, 'agent');
-    return;
-  }
-  const allow = settings.allowlist || [];
-  const ok = allow.some((d) => d === hostname || (d.startsWith('*.') && hostname.endsWith(d.slice(1))));
-  if (!ok) {
-    relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: `Hostname not in allowlist: ${hostname}` }, 'agent');
     return;
   }
 

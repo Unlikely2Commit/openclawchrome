@@ -4,7 +4,7 @@ export type Settings = {
   clientId: string;
   connected?: boolean;
   allowActions: boolean;
-  allowlist: string[];
+  // allowlist removed for v0.2.2 testing; may reintroduce later
   attachedTabIds: number[];
 };
 
@@ -18,7 +18,6 @@ export type AuditEntry = {
 const DEFAULTS: Settings = {
   clientId: `ext_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`,
   allowActions: false,
-  allowlist: [],
   attachedTabIds: []
 };
 

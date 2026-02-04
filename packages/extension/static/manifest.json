@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenClaw Browser Connector",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Pair OpenClaw to Chrome via relay: control OpenClaw tab group, extract page context, optional actions.",
   "icons": {
     "16": "icons/icon-16.png",
@@ -27,7 +27,8 @@
     "tabs",
     "tabGroups",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"

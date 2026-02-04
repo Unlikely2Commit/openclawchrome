@@ -826,6 +826,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
+    if (msg?.t === 'ws_error') {
+      void scheduleReconnect('ws_error');
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (msg?.t === 'tab_event') {
       const tabId = sender.tab?.id;
       if (!tabId) return;
@@ -854,13 +860,34 @@ chrome.storage.onChanged.addListener(() => {
   void ensureConnected();
 });
 
-chrome.runtime.onStartup?.addListener(() => {
+const KEEPALIVE_ALARM = 'openclaw_keepalive';
+
+async function ensureKeepaliveAlarm() {
+  try {
+    // Wake the service worker periodically so it can re-connect if Chrome suspends it.
+    // (MV3 can drop long-lived connections when the worker goes idle.)
+    await chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+  } catch {
+    // ignore
+  }
+}
+
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a?.name !== KEEPALIVE_ALARM) return;
   void ensureConnected();
+  void updateBadge();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  void ensureKeepaliveAlarm();
   void ensureConnected();
 });
 
+chrome.runtime.onStartup?.addListener(() => {
+  void ensureKeepaliveAlarm();
+  void ensureConnected();
+});
+
+void ensureKeepaliveAlarm();
 void ensureConnected();
 void updateBadge();

@@ -41,6 +41,10 @@ export class RelayWS {
     };
     ws.onerror = () => {
       this.state = { status: 'disconnected', lastError: 'WebSocket error' };
+      // Allow background to decide whether to reconnect.
+      try {
+        chrome.runtime.sendMessage({ t: 'ws_error' });
+      } catch {}
     };
     ws.onmessage = (ev) => {
       try {

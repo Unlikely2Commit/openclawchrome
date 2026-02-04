@@ -254,7 +254,13 @@ async function main() {
   // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_connect' });
-    await refresh();
+    // Background service worker may connect a moment after this call; poll briefly.
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      await refresh();
+      const state: PopupState = await rpc({ t: 'popup_get_state' });
+      if (state.ws?.status === 'connected') break;
+    }
   });
   qs('disconnectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_disconnect' });
@@ -309,6 +315,11 @@ async function main() {
   showPairBox(false);
   setPairInfo('');
   await refresh();
+
+  // Keep UI in sync while popup is open (MV3 service worker state can change asynchronously).
+  setInterval(() => {
+    void refresh();
+  }, 1000);
 }
 
 main().catch((e) => {

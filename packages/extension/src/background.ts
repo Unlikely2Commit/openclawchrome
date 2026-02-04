@@ -21,6 +21,8 @@ import { appendAudit, getSettings, setSettings } from './storage';
 
 let wsState: WSState = { status: 'disconnected' };
 
+let creatingOffscreen: Promise<void> | null = null;
+
 async function ensureOffscreenDocument() {
   // Keep WebSocket alive in an offscreen document so MV3 service worker suspension
   // doesn't tear down the connection.
@@ -28,6 +30,24 @@ async function ensureOffscreenDocument() {
   const offscreen: any = (chrome as any).offscreen;
   if (!offscreen?.createDocument) return;
 
+  const offscreenUrl = chrome.runtime.getURL('offscreen.html');
+
+  // Prefer the newer getContexts API when available.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const getContexts: any = (chrome.runtime as any).getContexts;
+    if (typeof getContexts === 'function') {
+      const ctxs = (await getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [offscreenUrl]
+      })) as Array<unknown>;
+      if (ctxs?.length) return;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Fallback to offscreen.hasDocument() if present.
   try {
     const has = (await offscreen.hasDocument?.()) as boolean | undefined;
     if (has) return;
@@ -35,15 +55,25 @@ async function ensureOffscreenDocument() {
     // ignore
   }
 
-  try {
-    await offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['IFRAME_SCRIPTING'],
-      justification: 'Maintain a persistent WebSocket connection to the OpenClaw relay'
-    });
-  } catch {
-    // ignore
+  if (creatingOffscreen) {
+    await creatingOffscreen;
+    return;
   }
+
+  creatingOffscreen = (async () => {
+    try {
+      await offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['IFRAME_SCRIPTING'],
+        justification: 'Maintain a persistent WebSocket connection to the OpenClaw relay'
+      });
+    } catch {
+      // ignore
+    }
+  })();
+
+  await creatingOffscreen;
+  creatingOffscreen = null;
 }
 
 async function relayConnect(wsUrl: string, token: string, clientId: string) {

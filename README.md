@@ -33,10 +33,16 @@ PORT=8787 HOST=0.0.0.0 npm start
 ```
 
 Relay endpoints:
-- Pairing request: `POST /pair/request` body `{ "clientId": "..." }`
-- Verify (human): `GET /pair/verify` (enter code)
-- Poll: `GET /pair/poll?clientId=...&deviceCode=...`
+- Fingerprint: `GET /fingerprint` → `{ short, full }`
+- Pairing request: `POST /pair/request` body `{ "clientId": "...", "meta": {"browser":"Chrome","os":"macOS","userAgent":"..."} }`
+- Bot lookup: `POST /pair/lookup` body `{ "userCode": "ABCD-EFGH" }`
+- Bot approve: `POST /pair/approve` body `{ "userCode": "ABCD-EFGH", "approverLabel": "telegram:@you" }`
+- Poll (extension): `GET /pair/poll?clientId=...&deviceCode=...`
 - WebSocket: `ws://<host>:8787/ws?token=...&client=extension|agent&clientId=...`
+
+Legacy/dev-only:
+- Verify (human): `GET /pair/verify` (enter code)
+- One-click confirm: `POST /pair/confirm` (enabled only when `ALLOW_PAIR_CONFIRM=1`)
 
 Agent simulator:
 - `POST /agent/send?token=...` body `{ "msg": { ... } }`
@@ -52,12 +58,45 @@ Agent simulator:
 4. Click **Load unpacked**
 5. Select: `packages/extension/dist`
 
-## Pair and connect
+## Pair and connect (A+ bot approval flow)
 1. Open the extension popup.
 2. Set **Relay HTTP Base URL** to e.g. `http://<ec2-host>:8787`
 3. Click **Pair**.
-4. Open the verification URL shown and enter the user code.
-5. Back in the extension popup: click **Connect WS**.
+4. The popup will show:
+   - a **relay fingerprint** (short code)
+   - a **user code** like `ABCD-EFGH`
+   - an instruction: `pair browser ABCD-EFGH`
+5. Send that command to your OpenClaw bot.
+6. After you approve in the bot, the extension will store the token and show **Paired. Click Connect WS.**
+
+## Minimal bot-side pairing spec (service-agnostic)
+When the user sends:
+```
+pair browser ABCD-EFGH
+```
+Your bot should:
+1) `POST /pair/lookup` with `{ userCode }`
+2) Show a confirmation prompt including:
+   - relay fingerprint (short + optionally full)
+   - metadata (browser/os) if present
+3) Require explicit user confirmation (e.g. user replies `YES`)
+4) If confirmed: `POST /pair/approve` with `{ userCode, approverLabel? }`
+
+### curl examples
+```bash
+BASE=http://localhost:8787
+CODE=ABCD-EFGH
+
+# 1) Lookup pending pairing context
+curl -sS "$BASE/pair/lookup" \
+  -H 'content-type: application/json' \
+  -d "{\"userCode\":\"$CODE\"}" | jq
+
+# 2) Approve
+curl -sS "$BASE/pair/approve" \
+  -H 'content-type: application/json' \
+  -d "{\"userCode\":\"$CODE\",\"approverLabel\":\"telegram:@you\"}" | jq
+```
 
 ## Attach a tab and observe
 1. Navigate to a page.

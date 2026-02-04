@@ -1,11 +1,19 @@
 export type ClientType = 'extension' | 'agent';
 
+export type RelayFingerprint = {
+  /** Full stable fingerprint (hex). */
+  full: string;
+  /** Short display form (e.g. first 4 chars of full). */
+  short: string;
+};
+
 export type PairRequestResponse = {
   clientId: string;
   deviceCode: string;
   userCode: string;
   verificationUri: string;
   expiresAt: number; // epoch ms
+  fingerprint?: RelayFingerprint;
 };
 
 export type PairPollResponse =

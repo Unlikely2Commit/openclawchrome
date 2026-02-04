@@ -1,12 +1,20 @@
 import express from 'express';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import type WebSocket from 'ws';
-import type { Envelope, ClientType, PairRequestResponse, PairPollResponse } from '@openclaw/shared';
+import type { Envelope, ClientType, PairRequestResponse, PairPollResponse, RelayFingerprint } from '@openclaw/shared';
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || '0.0.0.0';
+
+type PairMetadata = {
+  browser?: string;
+  os?: string;
+  userAgent?: string;
+};
 
 type PendingPair = {
   clientId: string;
@@ -15,10 +23,13 @@ type PendingPair = {
   expiresAt: number;
   verified: boolean;
   token?: string;
+  meta?: PairMetadata;
+  approverLabel?: string;
 };
 
 const pending = new Map<string, PendingPair>(); // deviceCode -> entry
 const byClient = new Map<string, PendingPair>(); // clientId -> entry
+const byUserCode = new Map<string, PendingPair>(); // userCode -> entry
 
 // Active websocket connections per token.
 type Conn = { ws: WebSocket; client: ClientType; clientId: string };
@@ -34,6 +45,43 @@ function makeUserCode(): string {
   return `${part()}-${part()}`;
 }
 
+function sha256hex(input: string): string {
+  return crypto.createHash('sha256').update(input).digest('hex');
+}
+
+function loadOrCreateRelayFingerprint(): RelayFingerprint {
+  // Preferred: derive from stable secret.
+  const secret = process.env.RELAY_SECRET;
+  if (secret) {
+    const full = sha256hex(`openclaw-relay-fingerprint:${secret}`);
+    return { full, short: full.slice(0, 4) };
+  }
+
+  // Fallback: persisted random seed.
+  const file = process.env.RELAY_FINGERPRINT_FILE || path.join(process.cwd(), '.openclaw-relay-fingerprint');
+  try {
+    const seed = fs.readFileSync(file, 'utf8').trim();
+    if (seed) {
+      const full = sha256hex(`openclaw-relay-fingerprint:${seed}`);
+      return { full, short: full.slice(0, 4) };
+    }
+  } catch {
+    // ignore
+  }
+
+  const seed = rand(32);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${seed}\n`, { encoding: 'utf8' });
+  } catch {
+    // ignore; fingerprint will still be stable for this process lifetime
+  }
+  const full = sha256hex(`openclaw-relay-fingerprint:${seed}`);
+  return { full, short: full.slice(0, 4) };
+}
+
+const RELAY_FINGERPRINT = loadOrCreateRelayFingerprint();
+
 const app = express();
 app.use(express.json());
 
@@ -41,29 +89,77 @@ app.get('/', (_req, res) => {
   res.type('text').send('OpenClaw Relay running.');
 });
 
+app.get('/fingerprint', (_req, res) => {
+  res.json(RELAY_FINGERPRINT);
+});
+
 app.post('/pair/request', (req, res) => {
   const clientId = String(req.body?.clientId || '');
   if (!clientId) return res.status(400).json({ error: 'clientId required' });
 
-  // create new
+  // Create new
   const deviceCode = rand(16);
   const userCode = makeUserCode();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
   const verificationUri = `${req.protocol}://${req.get('host')}/pair/verify`;
-  const entry: PendingPair = { clientId, deviceCode, userCode, expiresAt, verified: false };
+  const meta = (req.body?.meta || undefined) as PairMetadata | undefined;
+  const entry: PendingPair = { clientId, deviceCode, userCode, expiresAt, verified: false, meta };
 
   pending.set(deviceCode, entry);
   byClient.set(clientId, entry);
+  byUserCode.set(userCode, entry);
 
-  const out: PairRequestResponse = { clientId, deviceCode, userCode, verificationUri, expiresAt };
+  const out: PairRequestResponse = {
+    clientId,
+    deviceCode,
+    userCode,
+    verificationUri,
+    expiresAt,
+    fingerprint: RELAY_FINGERPRINT
+  };
   res.json(out);
 });
 
+// Bot-driven lookup: bot receives "pair browser <code>" from user and calls this.
+app.post('/pair/lookup', (req, res) => {
+  const userCode = String(req.body?.userCode || '').trim().toUpperCase();
+  if (!userCode) return res.status(400).json({ error: 'userCode required' });
+
+  const entry = byUserCode.get(userCode);
+  if (!entry) return res.status(404).json({ error: 'not found' });
+  if (Date.now() > entry.expiresAt) return res.status(410).json({ error: 'expired' });
+
+  return res.json({
+    clientId: entry.clientId,
+    expiresAt: entry.expiresAt,
+    fingerprint: RELAY_FINGERPRINT,
+    meta: entry.meta || {}
+  });
+});
+
+// Bot-driven approve: marks pairing approved and issues token (extension will receive it via /pair/poll)
+app.post('/pair/approve', (req, res) => {
+  const userCode = String(req.body?.userCode || '').trim().toUpperCase();
+  const approverLabel = req.body?.approverLabel ? String(req.body.approverLabel) : undefined;
+  if (!userCode) return res.status(400).json({ error: 'userCode required' });
+
+  const entry = byUserCode.get(userCode);
+  if (!entry) return res.status(404).json({ error: 'not found' });
+  if (Date.now() > entry.expiresAt) return res.status(410).json({ error: 'expired' });
+
+  if (!entry.token) entry.token = rand(24);
+  entry.verified = true;
+  if (approverLabel) entry.approverLabel = approverLabel;
+
+  return res.json({ ok: true });
+});
+
 // One-click pairing confirmation for the same browser that initiated /pair/request.
-// This removes the confusing "open another tab" step while preserving explicit user intent
-// (the user has to click Pair in the extension).
+// This is now a DEV-only flow (prefer bot approval via /pair/lookup + /pair/approve).
 app.post('/pair/confirm', (req, res) => {
+  if (process.env.ALLOW_PAIR_CONFIRM !== '1') return res.status(404).json({ error: 'not found' });
+
   const clientId = String(req.body?.clientId || '');
   const deviceCode = String(req.body?.deviceCode || '');
   if (!clientId || !deviceCode) return res.status(400).json({ error: 'clientId and deviceCode required' });
@@ -86,6 +182,7 @@ app.get('/pair/poll', (req, res) => {
   if (Date.now() > entry.expiresAt) {
     pending.delete(deviceCode);
     byClient.delete(clientId);
+    byUserCode.delete(entry.userCode);
     return res.json({ status: 'pending' } satisfies PairPollResponse);
   }
   if (entry.verified && entry.token) {
@@ -101,6 +198,7 @@ app.get('/pair/verify', (_req, res) => {
 </head>
 <body>
 <h2>OpenClaw Relay Pairing</h2>
+<p><b>NOTE:</b> This page is a legacy/dev flow. Prefer pairing via your OpenClaw bot.</p>
 <form method="POST" action="/pair/verify">
 <p>Enter the code shown in the Chrome extension popup:</p>
 <input name="userCode" placeholder="ABCD-EFGH" />
@@ -112,12 +210,12 @@ app.get('/pair/verify', (_req, res) => {
 app.use(express.urlencoded({ extended: false }));
 app.post('/pair/verify', (req, res) => {
   const userCode = String(req.body?.userCode || '').trim().toUpperCase();
-  const entry = Array.from(pending.values()).find((p) => p.userCode === userCode);
+  const entry = byUserCode.get(userCode) || Array.from(pending.values()).find((p) => p.userCode === userCode);
   if (!entry) return res.status(404).type('text').send('Code not found.');
   if (Date.now() > entry.expiresAt) return res.status(410).type('text').send('Code expired.');
 
   entry.verified = true;
-  entry.token = rand(24);
+  if (!entry.token) entry.token = rand(24);
   res.type('text').send(`Paired. You may return to the extension and click Connect WS.\nToken: ${entry.token.slice(0, 6)}…`);
 });
 
@@ -205,4 +303,5 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`OpenClaw Relay listening on http://${HOST}:${PORT}`);
+  console.log(`Relay fingerprint: ${RELAY_FINGERPRINT.short} (${RELAY_FINGERPRINT.full.slice(0, 12)}…)`);
 });

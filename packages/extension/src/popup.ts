@@ -2,6 +2,12 @@ import { getAudit } from './storage';
 
 type PopupState = any;
 
+type PairMeta = {
+  browser?: string;
+  os?: string;
+  userAgent?: string;
+};
+
 function qs<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing element: ${id}`);
@@ -21,6 +27,24 @@ function normalizeAllowlist(text: string): string[] {
 
 async function rpc(msg: any): Promise<any> {
   return await chrome.runtime.sendMessage(msg);
+}
+
+function detectPairMeta(): PairMeta {
+  const ua = navigator.userAgent || '';
+
+  // Very lightweight heuristics (good enough to show user what they’re approving).
+  let browser: string | undefined;
+  if (ua.includes('Edg/')) browser = 'Edge';
+  else if (ua.includes('Chrome/')) browser = 'Chrome';
+  else if (ua.includes('Firefox/')) browser = 'Firefox';
+
+  let os: string | undefined;
+  if (ua.includes('Windows')) os = 'Windows';
+  else if (ua.includes('Mac OS X')) os = 'macOS';
+  else if (ua.includes('Linux')) os = 'Linux';
+  else if (ua.includes('Android')) os = 'Android';
+
+  return { browser, os, userAgent: ua };
 }
 
 async function refresh() {
@@ -65,7 +89,7 @@ async function pairFlow() {
   if (!httpBase) throw new Error('Set Relay HTTP Base URL');
 
   const pairInfo = qs('pairInfo');
-  pairInfo.textContent = 'Requesting device code…';
+  pairInfo.textContent = 'Requesting pairing code…';
 
   // Save httpBase immediately.
   await rpc({ t: 'popup_set_settings', patch: { httpBase } });
@@ -75,32 +99,21 @@ async function pairFlow() {
   const r1 = await fetch(new URL('/pair/request', httpBase).toString(), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ clientId })
+    body: JSON.stringify({ clientId, meta: detectPairMeta() })
   });
   if (!r1.ok) throw new Error(`pair/request failed: ${r1.status}`);
   const data = await r1.json();
 
-  // One-click confirm (same browser). If it fails for any reason, we fall back to manual verify.
-  try {
-    pairInfo.textContent = 'Confirming pairing…';
-    const rConfirm = await fetch(new URL('/pair/confirm', httpBase).toString(), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ clientId, deviceCode: data.deviceCode })
-    });
-    if (rConfirm.ok) {
-      const c = await rConfirm.json();
-      if (c?.token) {
-        await rpc({ t: 'popup_set_settings', patch: { token: c.token } });
-        pairInfo.textContent = 'Paired. Click Connect WS.';
-        return;
-      }
-    }
-  } catch {
-    // ignore; fall back below
-  }
+  const fp = data.fingerprint?.short ? String(data.fingerprint.short).toUpperCase() : '????';
+  const userCode = String(data.userCode || '').toUpperCase();
 
-  pairInfo.innerHTML = `Pairing needs confirmation. Open <b>${data.verificationUri}</b> in a new tab and enter code <b>${data.userCode}</b>.`;
+  pairInfo.innerHTML = `
+<div><b>Relay:</b> ${fp}</div>
+<div><b>Code:</b> ${userCode}</div>
+<div style="margin-top:6px">Send this to your OpenClaw bot:</div>
+<div style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace; margin-top:4px;">pair browser ${userCode}</div>
+<div style="margin-top:6px">Waiting for approval…</div>
+`;
 
   const expiresAt = data.expiresAt as number;
   while (Date.now() < expiresAt) {

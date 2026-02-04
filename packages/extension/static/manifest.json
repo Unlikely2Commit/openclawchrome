@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenClaw Browser Connector",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Connect OpenClaw to your browser via a relay: pair a device, attach a tab, stream observations, and (optionally) allow actions.",
   "icons": {
     "16": "icons/icon-16.png",

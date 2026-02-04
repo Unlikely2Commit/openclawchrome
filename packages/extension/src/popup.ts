@@ -128,48 +128,9 @@ function formatTabTitle(title?: string): string {
   return t.length > 52 ? `${t.slice(0, 52)}…` : t;
 }
 
-async function refresh() {
-  const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
-  const s = state.settings;
+let auditOpen = false;
 
-  // Don't clobber the relay URL while the user is typing.
-  const httpEl = qs<HTMLInputElement>('httpBase');
-  if (!isEditingHttpBase) {
-    httpEl.value = s.httpBase || '';
-    lastHttpBaseDraft = httpEl.value;
-  }
-
-  setStatusPill(state.ws);
-
-  // Build info (best-effort)
-  try {
-    const t = String(__BUILD_TIME__ || '');
-    qs('buildInfo').textContent = t ? `build ${t.slice(0, 19)}` : '';
-  } catch {
-    // ignore
-  }
-
-  // Controlled tab info (Model 2)
-  const c = state.controlled || {};
-  const groupInfo = qs('groupInfo');
-  const tabInfo = qs('tabInfo');
-  const tabHost = qs('tabHost');
-  const detachBtn = qs<HTMLButtonElement>('detachBtn');
-
-  const inGroup = !!c.inGroup;
-  const gTitle = c.groupTitle || (inGroup ? 'OpenClaw' : '—');
-  const gColor = c.groupColor ? String(c.groupColor) : '';
-  groupInfo.textContent = inGroup ? `${gTitle}${gColor ? ` (${gColor})` : ''}` : '(not in OpenClaw group)';
-
-  tabInfo.textContent = c.activeTabId ? `#${c.activeTabId} — ${formatTabTitle(c.title)}` : 'No active tab';
-  tabHost.textContent = c.hostname || '—';
-
-  detachBtn.disabled = !c.activeTabId || !inGroup;
-
-  // Security
-  qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
-
-  // Audit
+async function renderAudit() {
   const list = qs('auditList');
   list.innerHTML = '';
   const audit = await getAudit();
@@ -215,6 +176,55 @@ async function refresh() {
       item.appendChild(detail);
       list.appendChild(item);
     }
+  }
+}
+
+async function refresh() {
+  const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
+  const s = state.settings;
+
+  // Don't clobber the relay URL while the user is typing.
+  const httpEl = qs<HTMLInputElement>('httpBase');
+  if (!isEditingHttpBase) {
+    httpEl.value = s.httpBase || '';
+    lastHttpBaseDraft = httpEl.value;
+  }
+
+  setStatusPill(state.ws);
+
+  // Build info (best-effort)
+  try {
+    const t = String(__BUILD_TIME__ || '');
+    qs('buildInfo').textContent = t ? `build ${t.slice(0, 19)}` : '';
+  } catch {
+    // ignore
+  }
+
+  // Controlled tab info (Model 2)
+  const c = state.controlled || {};
+  const groupInfo = qs('groupInfo');
+  const tabInfo = qs('tabInfo');
+  const tabHost = qs('tabHost');
+  const detachBtn = qs<HTMLButtonElement>('detachBtn');
+
+  const inGroup = !!c.inGroup;
+  const gTitle = c.groupTitle || (inGroup ? 'OpenClaw' : '—');
+  const gColor = c.groupColor ? String(c.groupColor) : '';
+  groupInfo.textContent = inGroup ? `${gTitle}${gColor ? ` (${gColor})` : ''}` : '(not in OpenClaw group)';
+
+  tabInfo.textContent = c.activeTabId ? `#${c.activeTabId} — ${formatTabTitle(c.title)}` : 'No active tab';
+  tabHost.textContent = c.hostname || '—';
+
+  detachBtn.disabled = !c.activeTabId || !inGroup;
+
+  // Security
+  qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
+
+  // Audit (avoid jitter: only refresh when the user opens the panel)
+  const list = qs('auditList');
+  list.style.display = auditOpen ? 'flex' : 'none';
+  if (auditOpen) {
+    await renderAudit();
   }
 }
 
@@ -314,6 +324,13 @@ async function main() {
       t: 'popup_set_settings',
       patch: { allowActions }
     });
+    await refresh();
+  });
+
+  // Audit toggle
+  qs<HTMLButtonElement>('auditToggleBtn').addEventListener('click', async () => {
+    auditOpen = !auditOpen;
+    qs<HTMLButtonElement>('auditToggleBtn').textContent = auditOpen ? 'Hide' : 'Show';
     await refresh();
   });
 

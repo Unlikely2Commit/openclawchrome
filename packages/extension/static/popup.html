@@ -93,6 +93,14 @@
         color: var(--muted2);
       }
 
+      .cardHeader {
+        display:flex;
+        align-items:center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
       label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 
       input[type=text] {
@@ -337,8 +345,11 @@
       </div>
 
       <div class="card">
-        <h3>Audit</h3>
-        <div class="audit" id="auditList"></div>
+        <div class="cardHeader">
+          <h3 style="margin:0">Audit</h3>
+          <button class="btn secondary small" id="auditToggleBtn" type="button">Show</button>
+        </div>
+        <div class="audit" id="auditList" style="display:none"></div>
       </div>
 
       <div class="footer" id="buildInfo"></div>

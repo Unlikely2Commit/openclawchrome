@@ -52,9 +52,7 @@ async function relayConnect(wsUrl: string, token: string, clientId: string) {
   try {
     await chrome.runtime.sendMessage({ t: 'offscreen_connect', wsUrl, token, clientId });
   } catch {
-    wsState = { status: 'disconnected', lastError: 'Failed to reach offscreen WebSocket host' };
-    void updateBadge();
-    void scheduleReconnect('offscreen_connect_failed');
+    // ignore
   }
 }
 

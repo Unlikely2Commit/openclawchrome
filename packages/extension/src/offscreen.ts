@@ -16,12 +16,6 @@ async function connect(opts: { wsUrl: string; token: string; clientId: string })
   relay.connect(opts);
 }
 
-// Best-effort: ensure the offscreen context doesn't get reclaimed too aggressively.
-// (Chrome can still suspend, but this helps keep the event loop warm.)
-setInterval(() => {
-  // no-op
-}, 30_000);
-
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'offscreen_connect') {

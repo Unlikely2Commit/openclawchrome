@@ -98,6 +98,16 @@ async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: s
   return { ok: true, url: urlStr };
 }
 
+async function ensureContentScript(tabId: number): Promise<void> {
+  // Declarative content scripts don't always inject into already-open tabs.
+  // Ensure it's present by executing our built content bundle.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  } catch {
+    // ignore; sendMessage will surface errors
+  }
+}
+
 async function handleActionRequest(req: ActionRequest) {
   const allowed = await isAllowedForTab(req.tabId);
   if (!allowed.ok) {
@@ -111,7 +121,20 @@ async function handleActionRequest(req: ActionRequest) {
       if (!req.url) throw new Error('navigate requires url');
       await chrome.tabs.update(req.tabId, { url: req.url });
     } else {
-      await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
+      // Ensure content script exists (especially for tabs opened before install/update)
+      await ensureContentScript(req.tabId);
+      try {
+        await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
+      } catch (e: any) {
+        // If the receiving end isn't there yet, inject and retry once.
+        const msg = String(e?.message || e);
+        if (msg.includes('Receiving end does not exist')) {
+          await ensureContentScript(req.tabId);
+          await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
+        } else {
+          throw e;
+        }
+      }
     }
 
     await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req } });
@@ -197,6 +220,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.t === 'attach_current_tab') {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id || !tab.url) throw new Error('No active tab');
+
+      // Ensure our content script exists in this tab (important for already-open tabs).
+      await ensureContentScript(tab.id);
+
       const settings = await getSettings();
       const attached = Array.from(new Set([...(settings.attachedTabIds || []), tab.id]));
       await setSettings({ attachedTabIds: attached });

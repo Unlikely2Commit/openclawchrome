@@ -13,6 +13,7 @@ let reconnectAttempt = 0;
 async function scheduleReconnect(reason = 'unknown') {
   const settings = await getSettings();
   if (!settings.httpBase || !settings.token) return;
+  if (settings.autoConnect === false) return;
 
   // Backoff: 0.5s → 1s → 2s → 4s → 8s (cap)
   const delay = Math.min(8000, 500 * Math.pow(2, reconnectAttempt));
@@ -44,6 +45,7 @@ async function scheduleReconnect(reason = 'unknown') {
 async function ensureConnected() {
   const settings = await getSettings();
   if (!settings.httpBase || !settings.token) return;
+  if (settings.autoConnect === false) return;
   if (relay.state.status === 'connected' || relay.state.status === 'connecting') return;
 
   const wsUrl = wsBaseFromHttp(settings.httpBase);
@@ -304,20 +306,35 @@ function safeHostname(url?: string): string | undefined {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'popup_get_state') {
+      const settings = await getSettings();
+
       // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
-      void ensureConnected();
+      if (settings.autoConnect !== false) void ensureConnected();
 
       // Model 2: opening popup implicitly controls the active tab by placing it in the OpenClaw group.
+      // BUT: if the user just detached this tab, don't immediately re-attach it.
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab?.id != null) await ensureControlled(tab.id);
+        if (tab?.id != null) {
+          // Clear the skip once the user changes active tabs.
+          if (settings.skipAutoControlTabId != null && settings.skipAutoControlTabId !== tab.id) {
+            await setSettings({ skipAutoControlTabId: undefined });
+          }
+
+          const refreshed = await getSettings();
+          const shouldAutoControl =
+            refreshed.autoControlOnPopupOpen !== false &&
+            (refreshed.skipAutoControlTabId == null || refreshed.skipAutoControlTabId !== tab.id);
+
+          if (shouldAutoControl) await ensureControlled(tab.id);
+        }
       } catch {
         // ignore
       }
 
-      const settings = await getSettings();
+      const after = await getSettings();
       const controlled = await getControlledInfoForActiveTab();
-      sendResponse({ ws: relay.state, settings, controlled });
+      sendResponse({ ws: relay.state, settings: after, controlled });
       return;
     }
 
@@ -331,6 +348,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.t === 'popup_connect') {
       const settings = await getSettings();
       if (!settings.httpBase || !settings.token) throw new Error('Missing relay URL / pairing token; pair first');
+      await setSettings({ autoConnect: true });
       const wsUrl = wsBaseFromHttp(settings.httpBase);
       reconnectAttempt = 0;
       relay.connect({ wsUrl, token: settings.token, clientId: settings.clientId });
@@ -340,6 +358,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg?.t === 'popup_disconnect') {
+      await setSettings({ autoConnect: false });
       relay.disconnect();
       await updateBadge();
       sendResponse({ ok: true });
@@ -349,6 +368,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.t === 'popup_detach_active_tab') {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) throw new Error('No active tab');
+      // Prevent auto-control from immediately re-attaching this tab.
+      await setSettings({ skipAutoControlTabId: tab.id });
       await removeTabFromGroup(tab.id);
       relay.send({ t: 'detach_tab', tabId: tab.id }, 'agent');
       await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId: tab.id, detail: { kind: 'detached' } });

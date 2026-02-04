@@ -1,48 +1,18 @@
 import type { ActionRequest, TabEvent } from '@openclaw/shared';
 
 let IS_CONTROLLED = false;
-let overlayEl: HTMLDivElement | null = null;
 
-function ensureOverlay() {
-  if (overlayEl) return;
-
-  const el = document.createElement('div');
-  el.id = '__openclaw_overlay';
-  el.textContent = 'OpenClaw controlling';
-  el.style.position = 'fixed';
-  el.style.top = '10px';
-  el.style.right = '10px';
-  el.style.zIndex = '2147483647';
-  el.style.padding = '8px 10px';
-  el.style.borderRadius = '10px';
-  el.style.fontFamily = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-  el.style.fontSize = '12px';
-  el.style.fontWeight = '700';
-  el.style.letterSpacing = '0.2px';
-  el.style.color = '#fff';
-  el.style.background = 'rgba(200, 18, 18, 0.92)';
-  el.style.border = '1px solid rgba(255,255,255,0.25)';
-  el.style.boxShadow = '0 10px 24px rgba(0,0,0,0.28)';
-  el.style.backdropFilter = 'blur(6px)';
-  el.style.pointerEvents = 'none';
-
-  overlayEl = el;
-  document.documentElement.appendChild(el);
-}
+// v0.3.1: remove the in-page pill/label overlay. The red border + tab group are enough,
+// and the overlay caused visual artifacts (dark halo/box) on some systems.
 
 function setControlled(on: boolean) {
   IS_CONTROLLED = on;
   if (on) {
-    ensureOverlay();
     try {
       document.documentElement.style.outline = '3px solid rgba(200, 18, 18, 0.95)';
       document.documentElement.style.outlineOffset = '-3px';
     } catch {}
   } else {
-    if (overlayEl) {
-      overlayEl.remove();
-      overlayEl = null;
-    }
     try {
       document.documentElement.style.outline = '';
       document.documentElement.style.outlineOffset = '';

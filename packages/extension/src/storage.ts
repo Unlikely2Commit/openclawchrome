@@ -2,12 +2,29 @@ export type Settings = {
   httpBase?: string;
   token?: string;
   clientId: string;
-  connected?: boolean;
+
+  /**
+   * If false, the extension will not auto-connect the WebSocket in the background.
+   * Set to false when the user explicitly clicks Disconnect.
+   */
+  autoConnect: boolean;
+
+  /**
+   * If true, opening the popup will automatically add the active tab to the OpenClaw tab group
+   * (Model 2) and enable the content script overlay/border.
+   */
+  autoControlOnPopupOpen: boolean;
+
+  /**
+   * If set, we will not auto-control this tab id on popup open (so Detach actually sticks).
+   * Cleared automatically once the active tab changes.
+   */
+  skipAutoControlTabId?: number;
+
   allowActions: boolean;
 
   /**
-   * v0.3.0 (Model 2): tabs are controlled iff they are inside an "OpenClaw" tab group.
-   * We keep attachedTabIds only for backwards compatibility/migrations; it is no longer used.
+   * Backwards compatibility (no longer used).
    */
   attachedTabIds?: number[];
 };
@@ -21,6 +38,8 @@ export type AuditEntry = {
 
 const DEFAULTS: Settings = {
   clientId: `ext_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`,
+  autoConnect: true,
+  autoControlOnPopupOpen: true,
   allowActions: false
 };
 

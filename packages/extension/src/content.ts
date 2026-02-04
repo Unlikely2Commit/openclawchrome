@@ -316,26 +316,75 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
 
       if (req.action === 'click') {
-        if (!req.selector) throw new Error('click requires selector');
-        const el = querySelectorPierce(req.selector) as HTMLElement | null;
-        if (!el) throw new Error(`selector not found: ${req.selector}`);
+        let el: HTMLElement | null = null;
+        if (req.selector) {
+          el = querySelectorPierce(req.selector) as HTMLElement | null;
+          if (!el) throw new Error(`selector not found: ${req.selector}`);
+        } else if (typeof req.x === 'number' && typeof req.y === 'number') {
+          el = document.elementFromPoint(req.x, req.y) as HTMLElement | null;
+          if (!el) throw new Error(`elementFromPoint not found at (${req.x},${req.y})`);
+        } else {
+          throw new Error('click requires selector or (x,y)');
+        }
         el.click();
       }
 
       if (req.action === 'type') {
-        if (!req.selector) throw new Error('type requires selector');
-        const el = querySelectorPierce(req.selector) as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
-        if (!el) throw new Error(`selector not found: ${req.selector}`);
-
         const text = req.text ?? '';
+
+        let el: Element | null = null;
+        if (req.selector) {
+          el = querySelectorPierce(req.selector) as Element | null;
+          if (!el) throw new Error(`selector not found: ${req.selector}`);
+        } else {
+          // Prefer currently focused element.
+          el = document.activeElement;
+
+          // If focus is not in an editor, try common rich editors (X uses a contenteditable div[role=textbox]).
+          const ae = el as Element | null;
+          const okFocused =
+            ae instanceof HTMLInputElement ||
+            ae instanceof HTMLTextAreaElement ||
+            (ae instanceof HTMLElement && ae.isContentEditable);
+
+          if (!okFocused) {
+            el =
+              (document.querySelector('[data-testid="tweetTextarea_0"] div[role="textbox"]') as Element | null) ||
+              (document.querySelector('div[role="textbox"][contenteditable="true"]') as Element | null) ||
+              (document.querySelector('div[contenteditable="true"][role="textbox"]') as Element | null);
+          }
+        }
+
+        if (!el) throw new Error('type: no target element (focus or selector)');
+
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
           el.focus();
           el.value = text;
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         } else {
-          (el as HTMLElement).focus();
-          document.execCommand('insertText', false, text);
+          const h = el as HTMLElement;
+          h.focus();
+
+          // For contenteditable (React), execCommand is more compatible than setting textContent directly.
+          try {
+            // Clear existing content
+            document.execCommand('selectAll', false);
+            document.execCommand('delete', false);
+          } catch {}
+
+          try {
+            document.execCommand('insertText', false, text);
+          } catch {
+            h.textContent = text;
+          }
+
+          // Nudge frameworks listening for input.
+          try {
+            h.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+          } catch {
+            h.dispatchEvent(new Event('input', { bubbles: true }));
+          }
         }
       }
 

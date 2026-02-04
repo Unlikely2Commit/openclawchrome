@@ -139,15 +139,29 @@ function querySelectorPierce(selector: string): Element | null {
 
     if (!found) return null;
 
-    const nextRoot = (found as any).shadowRoot as ShadowRoot | undefined;
-    currentRoot = nextRoot || found;
+    const nextShadow = (found as any).shadowRoot as ShadowRoot | undefined;
+
+    // Allow chaining through same-origin iframes if the selector explicitly targets an iframe element.
+    if (!nextShadow && found instanceof HTMLIFrameElement) {
+      try {
+        const doc = found.contentDocument;
+        if (doc) {
+          currentRoot = doc;
+          continue;
+        }
+      } catch {
+        // cross-origin
+      }
+    }
+
+    currentRoot = nextShadow || found;
   }
 
   return found;
 }
 
 function querySelectorDeep(part: string): Element | null {
-  // Best-effort: search document + open shadow roots.
+  // Best-effort: search document + open shadow roots + same-origin iframes.
   const queue: Array<Document | ShadowRoot> = [document];
   const seen = new Set<any>();
   while (queue.length) {
@@ -156,17 +170,26 @@ function querySelectorDeep(part: string): Element | null {
     seen.add(root);
 
     try {
-      const hit = root.querySelector(part) as Element | null;
+      const hit = (root as any).querySelector ? ((root as any).querySelector(part) as Element | null) : null;
       if (hit) return hit;
     } catch {
       // ignore
     }
 
-    // Walk elements in this root; enqueue any shadow roots.
+    // Walk elements in this root; enqueue any shadow roots and iframe documents.
     const tree = (root as any).querySelectorAll ? (root as any).querySelectorAll('*') : [];
     for (const el of Array.from(tree) as Element[]) {
       const sr = (el as any).shadowRoot as ShadowRoot | undefined;
       if (sr) queue.push(sr);
+
+      if (el instanceof HTMLIFrameElement) {
+        try {
+          const doc = el.contentDocument;
+          if (doc) queue.push(doc);
+        } catch {
+          // cross-origin iframe
+        }
+      }
     }
   }
   return null;

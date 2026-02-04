@@ -56,6 +56,8 @@ function detectPairMeta(): PairMeta {
   return { browser, os, userAgent: ua };
 }
 
+let pairingPending = false;
+
 function setStatusPill(ws: { status?: string; lastError?: string } | undefined) {
   const dot = qs<HTMLSpanElement>('statusDot');
   const text = qs<HTMLSpanElement>('statusText');
@@ -65,6 +67,13 @@ function setStatusPill(ws: { status?: string; lastError?: string } | undefined) 
 
   dot.classList.remove('good', 'bad', 'warn');
   pill.title = ws?.lastError ? `Last error: ${ws.lastError}` : '';
+
+  // Pair UX: show an explicit awaiting-approval state (amber pill) while polling.
+  if (pairingPending) {
+    dot.classList.add('warn');
+    text.textContent = 'Awaiting Approval';
+    return;
+  }
 
   if (status === 'connected') {
     dot.classList.add('good');
@@ -94,6 +103,12 @@ function setPairBoxDetails(opts: { relayShort: string; userCode: string }) {
   const cmd = `pair browser ${opts.userCode}`;
   qs('pairCmd').textContent = cmd;
   (qs('copyPairCmd') as HTMLButtonElement).dataset.cmd = cmd;
+}
+
+function setBtnLoading(btn: HTMLButtonElement, on: boolean, opts?: { label?: string }) {
+  btn.classList.toggle('loading', on);
+  btn.disabled = on;
+  if (opts?.label) btn.textContent = opts.label;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -190,6 +205,8 @@ async function refresh() {
     lastHttpBaseDraft = httpEl.value;
   }
 
+  // Clear the temporary pairing state once the background connects or errors.
+  if (state.ws?.status === 'connected' || state.ws?.lastError) pairingPending = false;
   setStatusPill(state.ws);
 
   // Build info (best-effort)
@@ -206,6 +223,7 @@ async function refresh() {
   const tabInfo = qs('tabInfo');
   const tabHost = qs('tabHost');
   const detachBtn = qs<HTMLButtonElement>('detachBtn');
+  const startBtn = qs<HTMLButtonElement>('startBtn');
 
   const inGroup = !!c.inGroup;
   const gTitle = c.groupTitle || (inGroup ? 'OpenClaw' : '—');
@@ -215,6 +233,7 @@ async function refresh() {
   tabInfo.textContent = c.activeTabId ? `#${c.activeTabId} — ${formatTabTitle(c.title)}` : 'No active tab';
   tabHost.textContent = c.hostname || '—';
 
+  startBtn.disabled = !c.activeTabId || inGroup;
   detachBtn.disabled = !c.activeTabId || !inGroup;
 
   // Security
@@ -232,6 +251,8 @@ async function pairFlow() {
   const httpBase = qs<HTMLInputElement>('httpBase').value.trim();
   if (!httpBase) throw new Error('Set Relay server URL');
 
+  pairingPending = true;
+  setStatusPill(undefined);
   setPairInfo('Requesting pairing code…');
   showPairBox(false);
 
@@ -260,6 +281,8 @@ async function pairFlow() {
   setPairBoxDetails({ relayShort, userCode });
   showPairBox(true);
   setPairInfo('Waiting for approval…');
+  pairingPending = true;
+  setStatusPill(undefined);
 
   const expiresAt = data.expiresAt as number;
   while (Date.now() < expiresAt) {
@@ -270,6 +293,7 @@ async function pairFlow() {
     if (!r2.ok) continue;
     const p = (await r2.json()) as { status: 'pending' } | { status: 'verified'; token: string };
     if (p.status === 'verified') {
+      pairingPending = false;
       await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({ t: 'popup_set_settings', patch: { token: p.token } });
       setPairInfo('Paired. Background will try to connect automatically (or click Connect).');
       await refresh();
@@ -277,33 +301,83 @@ async function pairFlow() {
     }
   }
 
+  pairingPending = false;
+  setStatusPill(undefined);
   setPairInfo('Pairing expired. Click Pair to try again.', true);
 }
 
 async function main() {
   // Pair
-  qs('pairBtn').addEventListener('click', () => pairFlow().catch((e) => setPairInfo(String(e.message || e), true)));
+  qs('pairBtn').addEventListener('click', () =>
+    pairFlow().catch((e) => {
+      pairingPending = false;
+      setStatusPill(undefined);
+      setPairInfo(String(e.message || e), true);
+    }),
+  );
 
   // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
-    await rpc<{ t: 'popup_connect' }, { ok: true }>({ t: 'popup_connect' });
-    // Background service worker may connect a moment after this call; poll briefly.
-    for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 400));
-      await refresh();
-      const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
-      if (state.ws?.status === 'connected') break;
+    const btn = qs<HTMLButtonElement>('connectBtn');
+    const prev = btn.textContent || 'Connect';
+    try {
+      setBtnLoading(btn, true, { label: 'Connecting…' });
+      await rpc<{ t: 'popup_connect' }, { ok: true }>({ t: 'popup_connect' });
+      // Background service worker may connect a moment after this call; poll briefly.
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        await refresh();
+        const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
+        if (state.ws?.status === 'connected') break;
+      }
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.textContent = prev;
     }
   });
   qs('disconnectBtn').addEventListener('click', async () => {
-    await rpc<{ t: 'popup_disconnect' }, { ok: true }>({ t: 'popup_disconnect' });
-    await refresh();
+    const btn = qs<HTMLButtonElement>('disconnectBtn');
+    const prev = btn.textContent || 'Disconnect';
+    try {
+      setBtnLoading(btn, true, { label: 'Disconnecting…' });
+      await rpc<{ t: 'popup_disconnect' }, { ok: true }>({ t: 'popup_disconnect' });
+      await refresh();
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
   });
 
-  // Detach
+  // Start controlling
+  qs('startBtn').addEventListener('click', async () => {
+    const btn = qs<HTMLButtonElement>('startBtn');
+    const prev = btn.textContent || 'Start controlling this tab';
+    try {
+      setBtnLoading(btn, true, { label: 'Starting…' });
+      await rpc<{ t: 'popup_start_control_active_tab' }, { ok: true }>({ t: 'popup_start_control_active_tab' });
+      await refresh();
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
+  });
+
+  // Stop / detach
   qs('detachBtn').addEventListener('click', async () => {
-    await rpc<{ t: 'popup_detach_active_tab' }, { ok: true }>({ t: 'popup_detach_active_tab' });
-    await refresh();
+    const btn = qs<HTMLButtonElement>('detachBtn');
+    const prev = btn.textContent || 'Stop';
+    try {
+      setBtnLoading(btn, true, { label: 'Stopping…' });
+      await rpc<{ t: 'popup_detach_active_tab' }, { ok: true }>({ t: 'popup_detach_active_tab' });
+      await refresh();
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
   });
 
   // Copy pairing command
@@ -322,9 +396,30 @@ async function main() {
     const allowActions = (e.target as HTMLInputElement).checked;
     await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({
       t: 'popup_set_settings',
-      patch: { allowActions }
+      patch: { allowActions, allowActionsSessionExpiresAt: undefined }
     });
     await refresh();
+  });
+
+  qs<HTMLButtonElement>('enableActionsSessionBtn').addEventListener('click', async () => {
+    const btn = qs<HTMLButtonElement>('enableActionsSessionBtn');
+    const prev = btn.textContent || 'Enable actions for this session';
+    try {
+      setBtnLoading(btn, true, { label: 'Enabling…' });
+      const r = await rpc<{ t: 'popup_enable_actions_session'; minutes?: number }, { ok: true; expiresAt: number }>({
+        t: 'popup_enable_actions_session',
+        minutes: 20
+      });
+      const minsLeft = Math.max(1, Math.round((r.expiresAt - Date.now()) / 60_000));
+      btn.textContent = `Enabled (${minsLeft}m)`;
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 1200);
+      await refresh();
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+    }
   });
 
   // Audit toggle

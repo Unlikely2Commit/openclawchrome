@@ -74,11 +74,14 @@ async function updateBadge() {
   const connected = relay.state.status === 'connected';
 
   if (settings.allowActions) {
-    await chrome.action.setBadgeText({ text: connected ? 'ON*' : '*' });
+    // Make the armed state visually obvious.
+    await chrome.action.setBadgeText({ text: 'ARM' });
     await chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
+    await chrome.action.setTitle({ title: connected ? 'OpenClaw (connected, actions ARMED)' : 'OpenClaw (disconnected, actions ARMED)' });
   } else {
     await chrome.action.setBadgeText({ text: connected ? 'ON' : '' });
     await chrome.action.setBadgeBackgroundColor({ color: connected ? '#2e7d32' : '#777' });
+    await chrome.action.setTitle({ title: connected ? 'OpenClaw (connected)' : 'OpenClaw' });
   }
 }
 
@@ -174,6 +177,28 @@ async function ensureControlled(tabId: number): Promise<void> {
   }
 }
 
+async function showNotification(opts: { title: string; message: string }) {
+  try {
+    await chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon-48.png',
+      title: opts.title,
+      message: opts.message
+    });
+  } catch {
+    // ignore (permission missing or disabled)
+  }
+}
+
+async function showWaitingBanner(tabId: number, message: string) {
+  try {
+    await ensureContentScript(tabId);
+    await chrome.tabs.sendMessage(tabId, { t: 'set_waiting', on: true, message });
+  } catch {
+    // ignore
+  }
+}
+
 relay.onMessage(async (env: Envelope) => {
   const msg = env.msg;
   if (msg.t === 'action_request') {
@@ -220,7 +245,25 @@ async function handleActionRequest(req: ActionRequest) {
   const allowed = await isAllowedForTab(req.tabId);
   if (!allowed.ok) {
     await appendAudit({ ts: Date.now(), kind: 'security_block', tabId: req.tabId, detail: { req, reason: allowed.reason, url: allowed.url } });
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error: allowed.reason }, 'agent');
+
+    const reason = allowed.reason || 'Blocked by extension security policy';
+    let hint = reason;
+    if (reason.toLowerCase().includes('allow actions')) {
+      hint = `${reason}. Open the extension popup and click “Enable actions for this session”.`;
+    } else if (reason.toLowerCase().includes('tab is not')) {
+      hint = `${reason}. Open the extension popup and click “Start controlling this tab”.`;
+    }
+
+    // Tell the agent to hand off (so it can message the user), AND show an in-page banner.
+    try {
+      relay.send({ t: 'wait_for_user', requestId: req.requestId, tabId: req.tabId, message: hint }, 'agent');
+    } catch {
+      // ignore
+    }
+    await showWaitingBanner(req.tabId, hint);
+    await showNotification({ title: 'OpenClaw needs you', message: hint });
+
+    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error: reason }, 'agent');
     return;
   }
 
@@ -262,6 +305,7 @@ async function handleActionRequest(req: ActionRequest) {
 async function handleOpenTabRequest(req: OpenTabRequest) {
   const settings = await getSettings();
   if (!settings.allowActions) {
+    await showNotification({ title: 'OpenClaw action blocked', message: 'Allow Actions is disabled. Open the extension popup and click “Enable actions for this session”.' });
     relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
     return;
   }
@@ -347,6 +391,7 @@ async function handleExtractRequest(req: ExtractRequest) {
         };
 
         const allRoots = (): Array<Document | ShadowRoot> => {
+          // Include document + open shadow roots + same-origin iframes.
           const roots: Array<Document | ShadowRoot> = [document];
           const seen = new Set<any>();
           for (let i = 0; i < roots.length; i++) {
@@ -357,6 +402,15 @@ async function handleExtractRequest(req: ExtractRequest) {
             for (const el of Array.from(nodes) as Element[]) {
               const sr = (el as any).shadowRoot as ShadowRoot | undefined;
               if (sr) roots.push(sr);
+
+              if (el instanceof HTMLIFrameElement) {
+                try {
+                  const doc = el.contentDocument;
+                  if (doc) roots.push(doc);
+                } catch {
+                  // cross-origin iframe
+                }
+              }
             }
           }
           return roots;
@@ -642,12 +696,9 @@ async function handleWaitForUser(req: WaitForUser) {
   const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) return;
 
-  await ensureContentScript(req.tabId);
-  try {
-    await chrome.tabs.sendMessage(req.tabId, { t: 'set_waiting', on: true, message: req.message || 'Waiting for user…' });
-  } catch {
-    // ignore
-  }
+  const msg = req.message || 'Waiting for user…';
+  await showWaitingBanner(req.tabId, msg);
+  await showNotification({ title: 'OpenClaw: waiting for you', message: msg });
 }
 
 async function handleResume(req: Resume) {
@@ -754,26 +805,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
       if (settings.autoConnect !== false) void ensureConnected();
 
-      // Model 2: opening popup implicitly controls the active tab by placing it in the OpenClaw group.
-      // BUT: if the user just detached this tab, don't immediately re-attach it.
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab?.id != null) {
-          // Clear the skip once the user changes active tabs.
-          if (settings.skipAutoControlTabId != null && settings.skipAutoControlTabId !== tab.id) {
-            await setSettings({ skipAutoControlTabId: undefined });
-          }
-
-          const refreshed = await getSettings();
-          const shouldAutoControl =
-            refreshed.autoControlOnPopupOpen !== false &&
-            (refreshed.skipAutoControlTabId == null || refreshed.skipAutoControlTabId !== tab.id);
-
-          if (shouldAutoControl) await ensureControlled(tab.id);
-        }
-      } catch {
-        // ignore
-      }
+      // v0.4.4: opening the popup must NOT implicitly control whatever active tab happens to be focused.
+      // Tabs are only controlled when the user explicitly clicks Start, or when the agent opens a tab.
 
       const after = await getSettings();
       const controlled = await getControlledInfoForActiveTab();
@@ -805,6 +838,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       relay.disconnect();
       await updateBadge();
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg?.t === 'popup_start_control_active_tab') {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) throw new Error('No active tab');
+      // If the user previously hit Stop, clear the skip so Start works immediately.
+      const settings = await getSettings();
+      if (settings.skipAutoControlTabId === tab.id) await setSettings({ skipAutoControlTabId: undefined });
+      await ensureControlled(tab.id);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg?.t === 'popup_enable_actions_session') {
+      const minutes = typeof msg.minutes === 'number' && msg.minutes > 0 ? Math.min(180, msg.minutes) : 20;
+      const expiresAt = Date.now() + minutes * 60_000;
+      await setSettings({ allowActions: true, allowActionsSessionExpiresAt: expiresAt });
+      await updateBadge();
+      sendResponse({ ok: true, expiresAt });
       return;
     }
 

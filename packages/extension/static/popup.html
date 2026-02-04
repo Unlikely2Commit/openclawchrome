@@ -125,12 +125,43 @@
         color: var(--text);
         font-weight: 700;
         cursor: pointer;
+        transition: transform 90ms ease, filter 120ms ease, background 160ms ease, border-color 160ms ease;
+        user-select: none;
       }
+
+      .btn:hover { filter: brightness(1.05); }
+      .btn:active { transform: translateY(1px) scale(0.99); }
+      .btn:focus-visible { outline: 2px solid rgba(245,159,0,0.55); outline-offset: 2px; }
+      .btn[disabled] { opacity: 0.55; cursor: not-allowed; filter: none; transform: none; }
+
+      .btn.loading { position: relative; pointer-events: none; opacity: 0.75; }
+      .btn.loading::after {
+        content: '';
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        margin-top: -7px;
+        border-radius: 999px;
+        border: 2px solid rgba(255,255,255,0.45);
+        border-top-color: rgba(255,255,255,0.95);
+        animation: spin 0.7s linear infinite;
+      }
+
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
       .btn.primary {
         background: linear-gradient(180deg, rgba(255,45,45,0.95), rgba(200,18,18,0.95));
         border-color: rgba(255,45,45,0.45);
       }
+
+      .btn.danger {
+        background: linear-gradient(180deg, rgba(255,45,45,0.22), rgba(200,18,18,0.20));
+        border-color: rgba(255,45,45,0.55);
+        color: rgba(255,235,235,0.98);
+      }
+      .btn.danger:hover { filter: brightness(1.12); }
 
       .btn.secondary {
         background: rgba(0,0,0,0.2);
@@ -298,7 +329,7 @@
 
         <div class="pairBox" id="pairBox">
           <div class="kv">
-            <div class="k">Relay</div><div class="v"><span class="mono" id="pairRelay">—</span></div>
+            <div class="k">Relay fingerprint</div><div class="v"><span class="mono" id="pairRelay">—</span></div>
             <div class="k">Code</div><div class="v"><span class="mono" id="pairCode">—</span></div>
           </div>
 
@@ -307,7 +338,7 @@
             <button class="btn small" id="copyPairCmd">Copy</button>
           </div>
 
-          <div class="hint" style="margin-top:10px" id="pairHint">Send the command to your OpenClaw bot and approve pairing.</div>
+          <div class="hint" style="margin-top:10px" id="pairHint">Send the command to your OpenClaw bot and approve pairing. (The relay fingerprint is stable per relay; it’s not a pairing code.)</div>
         </div>
 
         <div class="hint" id="pairInfo" style="margin-top:10px"></div>
@@ -315,7 +346,7 @@
 
       <div class="card">
         <h3>Controlled Tab (Model 2)</h3>
-        <div class="hint" id="controlledHint">Opening this popup automatically adds the active tab to the “OpenClaw” tab group.</div>
+        <div class="hint" id="controlledHint">Tabs are only controlled when you explicitly start them (or when the agent opens a new tab).</div>
 
         <div style="height:10px"></div>
         <div class="kv">
@@ -325,7 +356,10 @@
         </div>
 
         <div style="height:10px"></div>
-        <button class="btn secondary" id="detachBtn" title="Remove the active tab from the OpenClaw group">Stop / Detach active tab</button>
+        <div class="row">
+          <button class="btn secondary" id="startBtn" title="Add the active tab to the OpenClaw group">Start controlling this tab</button>
+          <button class="btn danger" id="detachBtn" title="Remove the active tab from the OpenClaw group">Stop</button>
+        </div>
       </div>
 
       <div class="card">
@@ -341,7 +375,10 @@
           </label>
         </div>
 
-        <div class="hint" style="margin-top:10px">Domain allowlist is temporarily disabled for faster testing. Actions are limited to tabs inside the OpenClaw tab group.</div>
+        <div style="height:10px"></div>
+        <button class="btn secondary" id="enableActionsSessionBtn" title="Temporarily enable actions (auto-expires)">Enable actions for this session</button>
+
+        <div class="hint" style="margin-top:10px">Actions are limited to tabs you’ve started controlling (OpenClaw tab group). “Enable actions for this session” auto-expires.</div>
       </div>
 
       <div class="card">

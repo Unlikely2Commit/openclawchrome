@@ -16,6 +16,12 @@ export type Settings = {
   autoControlOnPopupOpen: boolean;
 
   /**
+   * If set, Allow Actions is considered enabled until this timestamp (ms).
+   * After expiry, we auto-disable allowActions.
+   */
+  allowActionsSessionExpiresAt?: number;
+
+  /**
    * If set, we will not auto-control this tab id on popup open (so Detach actually sticks).
    * Cleared automatically once the active tab changes.
    */
@@ -39,13 +45,28 @@ export type AuditEntry = {
 const DEFAULTS: Settings = {
   clientId: `ext_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`,
   autoConnect: true,
-  autoControlOnPopupOpen: true,
+  // v0.4.4: do not implicitly control the active tab just because the popup was opened.
+  autoControlOnPopupOpen: false,
   allowActions: false
 };
 
 export async function getSettings(): Promise<Settings> {
   const out = await chrome.storage.local.get(['settings']);
-  return { ...DEFAULTS, ...(out.settings ?? {}) } as Settings;
+  const merged = { ...DEFAULTS, ...(out.settings ?? {}) } as Settings;
+
+  // Auto-expire Allow Actions sessions.
+  if (
+    merged.allowActionsSessionExpiresAt != null &&
+    typeof merged.allowActionsSessionExpiresAt === 'number' &&
+    Date.now() > merged.allowActionsSessionExpiresAt
+  ) {
+    merged.allowActions = false;
+    merged.allowActionsSessionExpiresAt = undefined;
+    // Best-effort persist (do not block callers).
+    void chrome.storage.local.set({ settings: merged }).catch(() => {});
+  }
+
+  return merged;
 }
 
 export async function setSettings(patch: Partial<Settings>): Promise<Settings> {

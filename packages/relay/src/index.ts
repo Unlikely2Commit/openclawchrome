@@ -463,6 +463,7 @@ wss.on('connection', (ws, req) => {
   const clientId = String(q.clientId || '');
 
   if (!token || !clientId) {
+    console.warn('[ws] reject: missing token/clientId');
     ws.close(1008, 'token and clientId required');
     return;
   }
@@ -471,9 +472,12 @@ wss.on('connection', (ws, req) => {
   const allowAnyToken = process.env.ALLOW_ANY_TOKEN === '1';
   const issued = issuedTokens.has(token) || Array.from(pending.values()).some((p) => p.token === token);
   if (!allowAnyToken && !issued) {
+    console.warn(`[ws] reject: unknown token ${token.slice(0, 6)} client=${client} clientId=${clientId}`);
     ws.close(1008, 'unknown token (pair first)');
     return;
   }
+
+  console.log(`[ws] accept token=${token.slice(0, 6)} client=${client} clientId=${clientId}`);
 
   const bucket = connsByToken.get(token) || {};
   const conn: Conn = { ws, client, clientId };
@@ -500,7 +504,8 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
+    console.log(`[ws] close token=${token.slice(0, 6)} client=${client} clientId=${clientId} code=${code} reason=${String(reason || '')}`);
     const b = connsByToken.get(token);
     if (!b) return;
     if (b.extension?.ws === ws) delete b.extension;

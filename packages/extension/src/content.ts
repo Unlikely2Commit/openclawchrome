@@ -3,17 +3,62 @@ import type { ActionRequest, TabEvent } from '@openclaw/shared';
 let IS_CONTROLLED = false;
 let WAITING_OVERLAY: HTMLDivElement | null = null;
 
+// Keep the MV3 service worker alive while a tab is controlled.
+// This prevents Chrome from suspending the worker and tearing down the relay WebSocket (1006 flapping).
+let keepalivePort: chrome.runtime.Port | null = null;
+let keepaliveTimer: number | null = null;
+
+function startKeepalive() {
+  if (keepalivePort) return;
+  try {
+    keepalivePort = chrome.runtime.connect({ name: 'openclaw_keepalive' });
+    keepalivePort.onDisconnect.addListener(() => {
+      keepalivePort = null;
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+      // Retry shortly.
+      if (IS_CONTROLLED) setTimeout(startKeepalive, 1000);
+    });
+    keepaliveTimer = window.setInterval(() => {
+      try {
+        keepalivePort?.postMessage({ t: 'ping', ts: Date.now() });
+      } catch {
+        // ignore
+      }
+    }, 25_000);
+  } catch {
+    // ignore
+  }
+}
+
+function stopKeepalive() {
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
+  }
+  if (keepalivePort) {
+    try {
+      keepalivePort.disconnect();
+    } catch {}
+    keepalivePort = null;
+  }
+}
+
 // v0.3.1: removed the in-page pill/label overlay. The red border + tab group are enough.
 // v0.4.0: add a minimal, explicit "waiting for user" banner for handoff/resume.
 
 function setControlled(on: boolean) {
   IS_CONTROLLED = on;
   if (on) {
+    startKeepalive();
     try {
       document.documentElement.style.outline = '3px solid rgba(200, 18, 18, 0.95)';
       document.documentElement.style.outlineOffset = '-3px';
     } catch {}
   } else {
+    stopKeepalive();
     try {
       document.documentElement.style.outline = '';
       document.documentElement.style.outlineOffset = '';

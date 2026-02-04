@@ -1026,6 +1026,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
+// Keepalive ports opened by content scripts to prevent MV3 SW suspension while controlled.
+const keepalivePorts = new Set<chrome.runtime.Port>();
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'openclaw_keepalive') return;
+  keepalivePorts.add(port);
+  port.onDisconnect.addListener(() => keepalivePorts.delete(port));
+  port.onMessage.addListener(() => {
+    // no-op
+  });
+});
+
 chrome.storage.onChanged.addListener(() => {
   void updateBadge();
   void ensureConnected();

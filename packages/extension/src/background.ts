@@ -960,6 +960,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Auto-reconnect when popup opens so UX doesn't "forget" the connection.
       if (settings.autoConnect !== false) void ensureConnected();
 
+      // Always prefer the offscreen-reported state (source of truth).
+      try {
+        const r = (await chrome.runtime.sendMessage({ t: 'offscreen_get_state' })) as { ok?: boolean; state?: WSState };
+        if (r?.state) wsState = r.state;
+      } catch {
+        // ignore
+      }
+
       // v0.4.4: opening the popup must NOT implicitly control whatever active tab happens to be focused.
       // Tabs are only controlled when the user explicitly clicks Start, or when the agent opens a tab.
 
@@ -984,7 +992,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // ignore
       }
 
-      sendResponse({ ws: wsState, settings: after, controlled });
+      sendResponse({ ok: true, ws: wsState, settings: after, controlled });
       return;
     }
 

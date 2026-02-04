@@ -36,6 +36,10 @@ export class RelayWS {
     ws.onopen = () => {
       this.state = { status: 'connected' };
       this.send({ t: 'hello', clientId: opts.clientId, name: 'OpenClaw Chrome Extension' }, 'agent');
+      // Let the background script re-announce controlled tabs after reconnect.
+      try {
+        chrome.runtime.sendMessage({ t: 'ws_open' });
+      } catch {}
     };
     ws.onclose = () => {
       this.state = { status: 'disconnected' };

@@ -177,10 +177,47 @@ async function ensureControlled(tabId: number): Promise<void> {
     // ignore
   }
 
+  await announceAttachTab(tabId);
+}
+
+async function announceAttachTab(tabId: number): Promise<void> {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab.url) relay.send({ t: 'attach_tab', tabId, url: tab.url, title: tab.title }, 'agent');
     await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId, detail: { kind: 'controlled', url: tab.url, title: tab.title } });
+  } catch {
+    // ignore
+  }
+}
+
+async function reannounceControlledTabs() {
+  // On reconnect, re-announce the active controlled tab (if any) so the agent regains context.
+  try {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (active?.id && (await isControlledTab(active.id))) {
+      await ensureContentScript(active.id);
+      try {
+        await chrome.tabs.sendMessage(active.id, { t: 'set_controlled', on: true });
+      } catch {}
+      await announceAttachTab(active.id);
+      return;
+    }
+  } catch {}
+
+  // Fallback: find any controlled tab in current window.
+  try {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    for (const t of tabs) {
+      if (!t.id) continue;
+      if (await isControlledTab(t.id)) {
+        await ensureContentScript(t.id);
+        try {
+          await chrome.tabs.sendMessage(t.id, { t: 'set_controlled', on: true });
+        } catch {}
+        await announceAttachTab(t.id);
+        break;
+      }
+    }
   } catch {
     // ignore
   }
@@ -935,6 +972,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg?.t === 'ws_error') {
       void scheduleReconnect('ws_error');
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg?.t === 'ws_open') {
+      void reannounceControlledTabs();
       sendResponse({ ok: true });
       return;
     }

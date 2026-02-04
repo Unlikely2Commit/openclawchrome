@@ -12,7 +12,8 @@ import type {
   PageInfo,
   ExtractLink,
   ExtractFormField,
-  ExtractClickable
+  ExtractClickable,
+  ScreenshotRequest
 } from '@openclaw/shared';
 import { RelayWS } from './ws';
 import { appendAudit, getSettings, setSettings } from './storage';
@@ -209,6 +210,9 @@ relay.onMessage(async (env: Envelope) => {
   }
   if (msg.t === 'extract_request') {
     await handleExtractRequest(msg as ExtractRequest);
+  }
+  if (msg.t === 'screenshot_request') {
+    await handleScreenshotRequest(msg as ScreenshotRequest);
   }
   if (msg.t === 'wait_for_user') {
     await handleWaitForUser(msg as WaitForUser);
@@ -701,6 +705,56 @@ async function handleWaitForUser(req: WaitForUser) {
   await showNotification({ title: 'OpenClaw: waiting for you', message: msg });
 }
 
+async function handleScreenshotRequest(req: ScreenshotRequest) {
+  const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
+  if (!allowed.ok) {
+    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
+    return;
+  }
+
+  // captureVisibleTab only captures the ACTIVE tab in a window. We'll best-effort activate the tab,
+  // capture, then restore the previously active tab.
+  try {
+    const tab = await chrome.tabs.get(req.tabId);
+    const windowId = tab.windowId;
+
+    const [prevActive] = await chrome.tabs.query({ windowId, active: true });
+
+    if (!tab.active) {
+      await chrome.tabs.update(req.tabId, { active: true });
+      // give the page a beat to paint
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    const quality = Math.max(10, Math.min(95, req.quality ?? 60));
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality });
+
+    // Restore previous tab if we changed focus
+    try {
+      if (prevActive?.id && prevActive.id !== req.tabId) await chrome.tabs.update(prevActive.id, { active: true });
+    } catch {
+      // ignore
+    }
+
+    let pageInfo: PageInfo | undefined;
+    try {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: req.tabId },
+        func: () => ({ url: location.href, title: document.title, readyState: document.readyState })
+      });
+      const pi = (r?.result || null) as any;
+      if (pi?.url && pi?.title && pi?.readyState) pageInfo = pi as PageInfo;
+    } catch {
+      // ignore
+    }
+
+    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: true, tabId: req.tabId, dataUrl, pageInfo }, 'agent');
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
+  }
+}
+
 async function handleResume(req: Resume) {
   const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) {
@@ -853,11 +907,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     if (msg?.t === 'popup_enable_actions_session') {
-      const minutes = typeof msg.minutes === 'number' && msg.minutes > 0 ? Math.min(180, msg.minutes) : 20;
-      const expiresAt = Date.now() + minutes * 60_000;
-      await setSettings({ allowActions: true, allowActionsSessionExpiresAt: expiresAt });
+      await setSettings({ allowActions: true });
       await updateBadge();
-      sendResponse({ ok: true, expiresAt });
+      sendResponse({ ok: true });
       return;
     }
 

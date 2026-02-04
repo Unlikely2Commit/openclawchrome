@@ -396,7 +396,7 @@ async function main() {
     const allowActions = (e.target as HTMLInputElement).checked;
     await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({
       t: 'popup_set_settings',
-      patch: { allowActions, allowActionsSessionExpiresAt: undefined }
+      patch: { allowActions }
     });
     await refresh();
   });
@@ -406,12 +406,10 @@ async function main() {
     const prev = btn.textContent || 'Enable actions for this session';
     try {
       setBtnLoading(btn, true, { label: 'Enabling…' });
-      const r = await rpc<{ t: 'popup_enable_actions_session'; minutes?: number }, { ok: true; expiresAt: number }>({
-        t: 'popup_enable_actions_session',
-        minutes: 20
+      await rpc<{ t: 'popup_enable_actions_session' }, { ok: true }>({
+        t: 'popup_enable_actions_session'
       });
-      const minsLeft = Math.max(1, Math.round((r.expiresAt - Date.now()) / 60_000));
-      btn.textContent = `Enabled (${minsLeft}m)`;
+      btn.textContent = 'Enabled';
       setTimeout(() => {
         btn.textContent = prev;
       }, 1200);

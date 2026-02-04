@@ -6,7 +6,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "npm run build --silent && tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.5.4"

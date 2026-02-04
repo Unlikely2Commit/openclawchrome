@@ -1,4 +1,14 @@
-import type { Envelope, ActionRequest, OpenTabRequest, Message } from '@openclaw/shared';
+import type {
+  Envelope,
+  ActionRequest,
+  OpenTabRequest,
+  Message,
+  ExtractRequest,
+  ExtractKind,
+  ActionReceipt,
+  WaitForUser,
+  Resume
+} from '@openclaw/shared';
 import { RelayWS } from './ws';
 import { appendAudit, getSettings, setSettings } from './storage';
 
@@ -167,14 +177,24 @@ relay.onMessage(async (env: Envelope) => {
   if (msg.t === 'open_tab_request') {
     await handleOpenTabRequest(msg);
   }
-  if ((msg as any).t === 'extract_request') {
-    await handleExtractRequest(msg as any);
+  if (msg.t === 'extract_request') {
+    await handleExtractRequest(msg as ExtractRequest);
+  }
+  if (msg.t === 'wait_for_user') {
+    await handleWaitForUser(msg as WaitForUser);
+  }
+  if (msg.t === 'resume') {
+    await handleResume(msg as Resume);
   }
 });
 
-async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: string; url?: string }> {
+async function isAllowedForTab(
+  tabId: number,
+  opts?: { requireActions?: boolean },
+): Promise<{ ok: boolean; reason?: string; url?: string }> {
   const settings = await getSettings();
-  if (!settings.allowActions) return { ok: false, reason: 'Allow Actions is disabled' };
+  const requireActions = opts?.requireActions !== false;
+  if (requireActions && !settings.allowActions) return { ok: false, reason: 'Allow Actions is disabled' };
 
   if (!(await isControlledTab(tabId))) return { ok: false, reason: 'Tab is not in the OpenClaw tab group' };
 
@@ -186,8 +206,8 @@ async function isAllowedForTab(tabId: number): Promise<{ ok: boolean; reason?: s
     return { ok: false, reason: 'Tab URL is not a valid URL', url: urlStr };
   }
 
-  // v0.3.0: no allowlist (experimental); actions are allowed on any valid URL
-  // as long as Allow Actions is enabled AND the tab is controlled (in the OpenClaw group).
+  // v0.3.0+: no allowlist (experimental); actions/extraction are allowed on any valid URL
+  // as long as the tab is controlled (in the OpenClaw group). Actions additionally require Allow Actions.
   return { ok: true, url: urlStr };
 }
 
@@ -203,6 +223,7 @@ async function handleActionRequest(req: ActionRequest) {
     if (req.action === 'navigate') {
       if (!req.url) throw new Error('navigate requires url');
       await chrome.tabs.update(req.tabId, { url: req.url });
+      await waitForTabComplete(req.tabId, 8000).catch(() => {});
     } else {
       // Ensure content script exists
       await ensureContentScript(req.tabId);
@@ -220,12 +241,16 @@ async function handleActionRequest(req: ActionRequest) {
       }
     }
 
-    await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req } });
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: true }, 'agent');
+    // Best-effort post-action receipt ("hands" confirmation)
+    const receipt = await collectActionReceipt(req.tabId).catch(() => undefined);
+
+    await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req, receipt } });
+    relay.send({ t: 'action_result', requestId: req.requestId, ok: true, receipt }, 'agent');
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req, error } });
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error }, 'agent');
+    const receipt = await collectActionReceipt(req.tabId).catch(() => undefined);
+    await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req, error, receipt } });
+    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error, receipt }, 'agent');
   }
 }
 
@@ -258,79 +283,361 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
   }
 }
 
-async function handleExtractRequest(req: any) {
-  const allowed = await isAllowedForTab(req.tabId);
+async function handleExtractRequest(req: ExtractRequest) {
+  // "Eyes" should work even if Allow Actions is disabled.
+  const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) {
-    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason } as any, 'agent');
+    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error: allowed.reason }, 'agent');
     return;
   }
 
-  const max = Math.max(1, Math.min(30, req.max ?? 12));
+  const max = Math.max(1, Math.min(100, req.max ?? 25));
 
   try {
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: req.tabId },
-      func: (kind: string, max: number) => {
-        const url = location.href;
-        const title = document.title;
+      func: (kind: ExtractKind, max: number) => {
+        const pageInfo = { url: location.href, title: document.title, readyState: document.readyState };
+
+        const isVisible = (el: Element): boolean => {
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+
+        const cssPath = (el: Element): string => {
+          const parts: string[] = [];
+          let cur: Element | null = el;
+          while (cur && parts.length < 5) {
+            let part = cur.tagName.toLowerCase();
+            const id = cur.getAttribute('id');
+            if (id) {
+              part += `#${CSS.escape(id)}`;
+              parts.unshift(part);
+              break;
+            }
+            const cls = (cur.getAttribute('class') || '')
+              .split(/\s+/)
+              .filter(Boolean)
+              .slice(0, 2)
+              .map((c) => `.${CSS.escape(c)}`)
+              .join('');
+            if (cls) part += cls;
+            parts.unshift(part);
+            cur = cur.parentElement;
+          }
+          return parts.join(' > ');
+        };
+
+        const getLabelFor = (el: Element): { label?: string; ariaLabel?: string } => {
+          let label: string | undefined;
+          let ariaLabel: string | undefined;
+
+          const aria = (el.getAttribute('aria-label') || '').trim();
+          if (aria) ariaLabel = aria.slice(0, 200);
+
+          const labelledBy = (el.getAttribute('aria-labelledby') || '').trim();
+          if (labelledBy) {
+            const id = labelledBy.split(/\s+/)[0];
+            const lab = id ? document.getElementById(id) : null;
+            const txt = (lab?.textContent || '').trim();
+            if (txt) ariaLabel = (ariaLabel ? `${ariaLabel} / ` : '') + txt.slice(0, 200);
+          }
+
+          if (el instanceof HTMLElement) {
+            const id = el.getAttribute('id');
+            if (id) {
+              const l = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+              const txt = (l?.textContent || '').trim();
+              if (txt) label = txt.slice(0, 200);
+            }
+            if (!label) {
+              const wrap = el.closest('label');
+              const txt = (wrap?.textContent || '').trim();
+              if (txt) label = txt.slice(0, 200);
+            }
+          }
+
+          return { label, ariaLabel };
+        };
 
         if (kind === 'page_info') {
-          return { url, title, items: [] };
+          return { pageInfo };
         }
 
-        // reddit listing extractor: return threads (title + absolute url)
-        const out: Array<{ title: string; url: string }> = [];
-        const seen = new Set<string>();
+        if (kind === 'readable_text') {
+          const root =
+            (document.querySelector('main') ||
+              document.querySelector('article') ||
+              document.querySelector('[role="main"]') ||
+              document.body) as HTMLElement | null;
+          const raw = (root?.innerText || '').trim();
+          const text = raw.replace(/\s+/g, ' ').slice(0, 20000);
+          return { pageInfo, readableText: { text } };
+        }
 
-        const anchors = Array.from(document.querySelectorAll('a')) as HTMLAnchorElement[];
-        for (const a of anchors) {
-          const href = a.href || '';
-          if (!href) continue;
-          if (!href.includes('/comments/')) continue;
-
-          const text = (a.textContent || '').trim();
-          if (!text) continue;
-
-          // Skip obvious non-title links
-          if (text.toLowerCase() === 'comments') continue;
-          if (text.toLowerCase() === 'share') continue;
-
-          // Normalize to canonical post url (strip query/hash)
-          try {
-            const u = new URL(href);
-            u.search = '';
-            u.hash = '';
-            const key = u.toString();
-            if (seen.has(key)) continue;
-            seen.add(key);
-            out.push({ title: text.slice(0, 200), url: key });
-            if (out.length >= max) break;
-          } catch {
-            continue;
+        if (kind === 'links') {
+          const links: Array<{ text: string; url: string }> = [];
+          const seen = new Set<string>();
+          const anchors = Array.from(document.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+          for (const a of anchors) {
+            const txt = (a.textContent || '').trim().replace(/\s+/g, ' ');
+            if (!txt) continue;
+            const hrefRaw = a.getAttribute('href') || '';
+            if (!hrefRaw) continue;
+            try {
+              const url = new URL(hrefRaw, location.href).toString();
+              if (seen.has(url)) continue;
+              seen.add(url);
+              links.push({ text: txt.slice(0, 200), url });
+              if (links.length >= max) break;
+            } catch {
+              continue;
+            }
           }
+          return { pageInfo, links: { links } };
         }
 
-        return { url, title, items: out };
+        if (kind === 'forms') {
+          const fields: Array<{
+            tag: 'input' | 'textarea' | 'select' | 'button';
+            type?: string;
+            name?: string;
+            id?: string;
+            label?: string;
+            ariaLabel?: string;
+            placeholder?: string;
+            value?: string;
+            selector: string;
+          }> = [];
+
+          const els = Array.from(document.querySelectorAll('input, textarea, select, button')) as Array<
+            HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement
+          >;
+
+          for (const el of els) {
+            if (!isVisible(el)) continue;
+            const tag = el.tagName.toLowerCase() as 'input' | 'textarea' | 'select' | 'button';
+            const { label, ariaLabel } = getLabelFor(el);
+            const type = el instanceof HTMLInputElement ? (el.type || undefined) : undefined;
+            const name = (el.getAttribute('name') || '').trim() || undefined;
+            const id = (el.getAttribute('id') || '').trim() || undefined;
+            const placeholder = (el.getAttribute('placeholder') || '').trim().slice(0, 200) || undefined;
+            let value: string | undefined;
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+              try {
+                value = String((el as any).value ?? '').slice(0, 200) || undefined;
+              } catch {
+                // ignore
+              }
+            }
+
+            fields.push({ tag, type, name, id, label, ariaLabel, placeholder, value, selector: cssPath(el) });
+            if (fields.length >= max) break;
+          }
+          return { pageInfo, forms: { fields } };
+        }
+
+        // visible_clickables
+        const clickables: Array<{ role: string; name: string; selector: string; url?: string }> = [];
+        const candidates = Array.from(
+          document.querySelectorAll('a[href], button, [role="button"], input[type="button"], input[type="submit"]'),
+        ) as Element[];
+
+        for (const el of candidates) {
+          if (!isVisible(el)) continue;
+
+          const role = (el.getAttribute('role') || el.tagName.toLowerCase()) as string;
+
+          const name =
+            (el.getAttribute('aria-label') || '').trim() ||
+            (el instanceof HTMLInputElement ? (el.value || '').trim() : '') ||
+            (el.textContent || '').trim();
+          if (!name) continue;
+
+          let url: string | undefined;
+          if (el instanceof HTMLAnchorElement) {
+            try {
+              url = new URL(el.getAttribute('href') || '', location.href).toString();
+            } catch {
+              // ignore
+            }
+          }
+
+          clickables.push({ role, name: name.replace(/\s+/g, ' ').slice(0, 200), selector: cssPath(el), url });
+          if (clickables.length >= max) break;
+        }
+
+        return { pageInfo, visibleClickables: { clickables } };
       },
       args: [req.kind, max]
     });
 
     const payload = (result || {}) as any;
+
     relay.send(
       {
         t: 'extract_result',
         requestId: req.requestId,
         ok: true,
         tabId: req.tabId,
-        url: payload.url,
-        title: payload.title,
-        items: Array.isArray(payload.items) ? payload.items : []
-      } as any,
+        kind: req.kind,
+        pageInfo: payload.pageInfo,
+        readableText: payload.readableText,
+        links: payload.links,
+        forms: payload.forms,
+        visibleClickables: payload.visibleClickables
+      },
       'agent'
     );
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, error } as any, 'agent');
+    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error }, 'agent');
+  }
+}
+
+async function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
+  return await new Promise((resolve, reject) => {
+    const started = Date.now();
+
+    const timer = setInterval(() => {
+      if (Date.now() - started > timeoutMs) {
+        cleanup();
+        reject(new Error('timeout'));
+      }
+    }, 250) as unknown as number;
+
+    const onUpdated = (id: number, info: chrome.tabs.TabChangeInfo) => {
+      if (id !== tabId) return;
+      if (info.status === 'complete') {
+        cleanup();
+        resolve();
+      }
+    };
+
+    const cleanup = () => {
+      clearInterval(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    // Fast-path: already complete.
+    void chrome.tabs
+      .get(tabId)
+      .then((t) => {
+        if ((t as any)?.status === 'complete') {
+          cleanup();
+          resolve();
+        }
+      })
+      .catch(() => {});
+  });
+}
+
+async function collectActionReceipt(tabId: number): Promise<ActionReceipt> {
+  // Avoid blocking on restricted pages.
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const url = location.href;
+      const title = document.title;
+      const readyState = document.readyState;
+
+      const root =
+        (document.querySelector('main') ||
+          document.querySelector('article') ||
+          document.querySelector('[role="main"]') ||
+          document.body) as HTMLElement | null;
+
+      const excerpt = (root?.innerText || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 500);
+
+      const banners: string[] = [];
+      const candidates = Array.from(
+        document.querySelectorAll('[role="alert"], .alert, .alert-danger, .error, .flash-error, [data-test*="error"], [data-testid*="error"]'),
+      ) as Element[];
+      for (const el of candidates) {
+        const txt = (el.textContent || '').trim().replace(/\s+/g, ' ');
+        if (!txt) continue;
+        banners.push(txt.slice(0, 300));
+        if (banners.length >= 3) break;
+      }
+
+      return { url, title, readyState, excerpt, errorBanners: banners };
+    }
+  });
+
+  const r = (result || {}) as any;
+  return {
+    url: typeof r.url === 'string' ? r.url : undefined,
+    title: typeof r.title === 'string' ? r.title : undefined,
+    readyState: r.readyState,
+    excerpt: typeof r.excerpt === 'string' ? r.excerpt : undefined,
+    errorBanners: Array.isArray(r.errorBanners) ? (r.errorBanners as string[]) : undefined
+  };
+}
+
+async function handleWaitForUser(req: WaitForUser) {
+  const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
+  if (!allowed.ok) return;
+
+  await ensureContentScript(req.tabId);
+  try {
+    await chrome.tabs.sendMessage(req.tabId, { t: 'set_waiting', on: true, message: req.message || 'Waiting for user…' });
+  } catch {
+    // ignore
+  }
+}
+
+async function handleResume(req: Resume) {
+  const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
+  if (!allowed.ok) {
+    relay.send({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
+    return;
+  }
+
+  await ensureContentScript(req.tabId);
+  try {
+    await chrome.tabs.sendMessage(req.tabId, { t: 'set_waiting', on: false });
+  } catch {
+    // ignore
+  }
+
+  // Acknowledge + send fresh page_info extraction.
+  try {
+    const receipt = await collectActionReceipt(req.tabId);
+    relay.send(
+      {
+        t: 'resume_ack',
+        requestId: req.requestId,
+        ok: true,
+        tabId: req.tabId,
+        pageInfo: receipt.url && receipt.title && receipt.readyState ? { url: receipt.url, title: receipt.title, readyState: receipt.readyState } : undefined
+      },
+      'agent'
+    );
+
+    // Also emit an extract_result (page_info) so agents that only listen for extracts can refresh state.
+    if (receipt.url && receipt.title && receipt.readyState) {
+      relay.send(
+        {
+          t: 'extract_result',
+          requestId: req.requestId,
+          ok: true,
+          tabId: req.tabId,
+          kind: 'page_info',
+          pageInfo: { url: receipt.url, title: receipt.title, readyState: receipt.readyState }
+        },
+        'agent'
+      );
+    }
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    relay.send({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
   }
 }
 

@@ -42,6 +42,9 @@ export type Message =
   | OpenTabResult
   | ExtractRequest
   | ExtractResult
+  | WaitForUser
+  | Resume
+  | ResumeAck
   | Ping;
 
 export type Hello = {
@@ -92,11 +95,24 @@ export type ActionRequest = {
   url?: string;
 };
 
+export type DocumentReadyStateLike = 'loading' | 'interactive' | 'complete';
+
+export type ActionReceipt = {
+  url?: string;
+  title?: string;
+  readyState?: DocumentReadyStateLike;
+  /** Short (human readable) excerpt to confirm we are on the right screen. */
+  excerpt?: string;
+  /** Best-effort error banners / alerts. */
+  errorBanners?: string[];
+};
+
 export type ActionResult = {
   t: 'action_result';
   requestId: string;
   ok: boolean;
   error?: string;
+  receipt?: ActionReceipt;
 };
 
 export type OpenTabRequest = {
@@ -114,18 +130,47 @@ export type OpenTabResult = {
   error?: string;
 };
 
+export type PageInfo = {
+  url: string;
+  title: string;
+  readyState: DocumentReadyStateLike;
+};
+
+export type ExtractKind = 'page_info' | 'readable_text' | 'links' | 'forms' | 'visible_clickables';
+
 export type ExtractRequest = {
   t: 'extract_request';
   requestId: string;
   tabId: number;
 
-  /**
-   * Keep this intentionally limited; add new kinds as needed.
-   */
-  kind: 'reddit_listing' | 'page_info';
+  kind: ExtractKind;
 
   /** Max number of items to return when kind supports lists. */
   max?: number;
+};
+
+export type ExtractLink = {
+  text: string;
+  url: string;
+};
+
+export type ExtractFormField = {
+  tag: 'input' | 'textarea' | 'select' | 'button';
+  type?: string;
+  name?: string;
+  id?: string;
+  label?: string;
+  ariaLabel?: string;
+  placeholder?: string;
+  value?: string;
+  selector: string;
+};
+
+export type ExtractClickable = {
+  role: string;
+  name: string;
+  selector: string;
+  url?: string;
 };
 
 export type ExtractResult = {
@@ -135,10 +180,36 @@ export type ExtractResult = {
   error?: string;
 
   tabId: number;
-  url?: string;
-  title?: string;
+  kind: ExtractKind;
 
-  items?: Array<{ title: string; url: string }>;
+  pageInfo?: PageInfo;
+
+  readableText?: { text: string };
+  links?: { links: ExtractLink[] };
+  forms?: { fields: ExtractFormField[] };
+  visibleClickables?: { clickables: ExtractClickable[] };
+};
+
+export type WaitForUser = {
+  t: 'wait_for_user';
+  requestId: string;
+  tabId: number;
+  message?: string;
+};
+
+export type Resume = {
+  t: 'resume';
+  requestId: string;
+  tabId: number;
+};
+
+export type ResumeAck = {
+  t: 'resume_ack';
+  requestId: string;
+  ok: boolean;
+  tabId: number;
+  error?: string;
+  pageInfo?: PageInfo;
 };
 
 export type Ping = {

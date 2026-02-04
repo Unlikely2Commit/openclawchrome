@@ -15,7 +15,8 @@ import type {
   AttachTab,
   DetachTab,
   TabEvent,
-  ActionResult
+  ActionResult,
+  ResumeAck
 } from '@openclaw/shared';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -59,6 +60,7 @@ type LastState = {
   controlledTab?: ControlledTab;
   lastActionResult?: { env: Envelope<ActionResult>; at: number };
   lastExtractResult?: { env: Envelope<any>; at: number };
+  lastResumeAck?: { env: Envelope<ResumeAck>; at: number };
   lastTabEvent?: { env: Envelope<TabEvent>; at: number };
   lastAttach?: { env: Envelope<AttachTab>; at: number };
   lastDetach?: { env: Envelope<DetachTab>; at: number };
@@ -110,6 +112,10 @@ function recordToAgent(token: string, env: Envelope) {
 
   if ((env.msg as any)?.t === 'extract_result') {
     last.lastExtractResult = { env: env as any, at };
+  }
+
+  if ((env.msg as any)?.t === 'resume_ack') {
+    last.lastResumeAck = { env: env as any, at };
   }
 
   lastByToken.set(token, last);

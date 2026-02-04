@@ -1,9 +1,10 @@
 import type { ActionRequest, TabEvent } from '@openclaw/shared';
 
 let IS_CONTROLLED = false;
+let WAITING_OVERLAY: HTMLDivElement | null = null;
 
-// v0.3.1: remove the in-page pill/label overlay. The red border + tab group are enough,
-// and the overlay caused visual artifacts (dark halo/box) on some systems.
+// v0.3.1: removed the in-page pill/label overlay. The red border + tab group are enough.
+// v0.4.0: add a minimal, explicit "waiting for user" banner for handoff/resume.
 
 function setControlled(on: boolean) {
   IS_CONTROLLED = on;
@@ -17,6 +18,54 @@ function setControlled(on: boolean) {
       document.documentElement.style.outline = '';
       document.documentElement.style.outlineOffset = '';
     } catch {}
+    setWaiting(false);
+  }
+}
+
+function setWaiting(on: boolean, message?: string) {
+  if (!IS_CONTROLLED) return;
+
+  if (!on) {
+    if (WAITING_OVERLAY) {
+      try {
+        WAITING_OVERLAY.remove();
+      } catch {}
+      WAITING_OVERLAY = null;
+    }
+    return;
+  }
+
+  if (!WAITING_OVERLAY) {
+    const div = document.createElement('div');
+    div.id = '__openclaw_waiting__';
+    div.style.position = 'fixed';
+    div.style.top = '12px';
+    div.style.right = '12px';
+    div.style.zIndex = '2147483647';
+    div.style.maxWidth = '360px';
+    div.style.padding = '10px 12px';
+    div.style.background = 'rgba(200, 18, 18, 0.95)';
+    div.style.color = 'white';
+    div.style.borderRadius = '10px';
+    div.style.font = '13px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
+    div.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
+
+    const title = document.createElement('div');
+    title.textContent = 'OpenClaw: waiting for user';
+    title.style.fontWeight = '700';
+    title.style.marginBottom = '6px';
+
+    const body = document.createElement('div');
+    body.textContent = message || 'Please take over in the browser, then click Resume in your agent.';
+    body.style.opacity = '0.95';
+
+    div.appendChild(title);
+    div.appendChild(body);
+    document.documentElement.appendChild(div);
+    WAITING_OVERLAY = div;
+  } else {
+    const body = WAITING_OVERLAY.querySelector('div:nth-child(2)') as HTMLDivElement | null;
+    if (body) body.textContent = message || 'Please take over in the browser, then click Resume in your agent.';
   }
 }
 
@@ -104,6 +153,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'set_controlled') {
       setControlled(!!msg.on);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (msg?.t === 'set_waiting') {
+      setWaiting(!!msg.on, typeof msg.message === 'string' ? msg.message : undefined);
       sendResponse({ ok: true });
       return;
     }

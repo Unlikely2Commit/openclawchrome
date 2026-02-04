@@ -3,58 +3,326 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClaw Relay</title>
+    <title>OpenClaw</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 10px; width: 340px; }
-      .row { margin: 8px 0; }
-      label { display:block; font-size: 12px; color: #444; margin-bottom: 4px; }
-      input[type=text] { width: 100%; padding: 6px; box-sizing: border-box; }
-      textarea { width: 100%; height: 70px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-      button { padding: 6px 10px; }
-      .small { font-size: 12px; color: #555; }
-      .status { font-size: 12px; padding: 6px; background: #f5f5f5; border-radius: 6px; }
-      .tabs { font-size: 12px; }
-      .log { font-size: 11px; max-height: 110px; overflow: auto; background: #111; color: #ddd; padding: 6px; border-radius: 6px; }
-      .log div { white-space: pre-wrap; }
+      :root {
+        --bg: #0b0d12;
+        --panel: #10131b;
+        --panel-2: #0e1118;
+        --text: #e6e8ee;
+        --muted: #a6adbb;
+        --border: #1d2331;
+        --accent: #ff3b3b;
+        --accent-2: #ff5a5a;
+        --good: #20c997;
+        --bad: #ff3b3b;
+        --warn: #f59f00;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        width: 360px;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: radial-gradient(1200px 600px at 20% -20%, rgba(255,59,59,0.18), transparent 55%),
+                    radial-gradient(900px 500px at 120% 10%, rgba(255,90,90,0.12), transparent 50%),
+                    var(--bg);
+        color: var(--text);
+      }
+
+      .wrap { padding: 12px; }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .title {
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--warn);
+        box-shadow: 0 0 0 3px rgba(245, 159, 0, 0.15);
+      }
+      .dot.good { background: var(--good); box-shadow: 0 0 0 3px rgba(32, 201, 151, 0.15); }
+      .dot.bad { background: var(--bad); box-shadow: 0 0 0 3px rgba(255, 59, 59, 0.15); }
+
+      .section {
+        background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px;
+        margin: 10px 0;
+      }
+
+      .section h3 {
+        margin: 0 0 8px 0;
+        font-size: 12px;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0 0 6px 0;
+      }
+
+      input[type=text], textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 9px 10px;
+        outline: none;
+      }
+
+      input[type=text]::placeholder, textarea::placeholder { color: rgba(166,173,187,0.55); }
+
+      textarea { height: 70px; font-family: var(--mono); resize: vertical; }
+
+      .row { display: flex; gap: 8px; align-items: center; }
+      .row > * { flex: 1; }
+
+      .btn {
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.06);
+        color: var(--text);
+        padding: 9px 10px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .btn:hover { border-color: rgba(255,255,255,0.18); }
+
+      .btn.primary {
+        background: linear-gradient(180deg, rgba(255,59,59,0.95), rgba(200,20,20,0.95));
+        border-color: rgba(255,59,59,0.45);
+      }
+
+      .btn.primary:hover { filter: brightness(1.05); }
+
+      .btn.ghost {
+        background: transparent;
+        border-color: var(--border);
+        color: var(--muted);
+        font-weight: 600;
+      }
+
+      .btn.small { padding: 7px 9px; font-size: 12px; }
+
+      .muted { color: var(--muted); font-size: 12px; }
+      .mono { font-family: var(--mono); }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 90px 1fr;
+        gap: 6px 10px;
+        margin-top: 8px;
+        font-size: 12px;
+      }
+      .kv div:nth-child(odd) { color: var(--muted); }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(255,255,255,0.03);
+      }
+
+      .toggle .left { display: flex; flex-direction: column; gap: 2px; }
+      .toggle .name { font-weight: 700; }
+      .toggle .desc { font-size: 12px; color: var(--muted); }
+
+      .switch {
+        width: 44px;
+        height: 26px;
+        border-radius: 999px;
+        position: relative;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.06);
+        flex: 0 0 auto;
+      }
+
+      .switch::after {
+        content: '';
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.85);
+        transition: transform 120ms ease;
+      }
+
+      input[type=checkbox].switch-input { display:none; }
+
+      input[type=checkbox].switch-input:checked + .switch {
+        background: rgba(255,59,59,0.25);
+        border-color: rgba(255,59,59,0.45);
+      }
+
+      input[type=checkbox].switch-input:checked + .switch::after {
+        transform: translateX(18px);
+        background: rgba(255,255,255,0.92);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+        background: rgba(0,0,0,0.12);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      thead th {
+        text-align: left;
+        font-weight: 700;
+        color: var(--muted);
+        padding: 8px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255,255,255,0.03);
+      }
+
+      tbody td {
+        padding: 8px;
+        border-bottom: 1px solid rgba(29,35,49,0.65);
+        vertical-align: top;
+      }
+
+      tbody tr:last-child td { border-bottom: none; }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.05);
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .err { color: #ffd1d1; }
+
+      .spacer { height: 8px; }
     </style>
   </head>
   <body>
-    <div class="row">
-      <div class="status" id="status">Loading…</div>
-    </div>
+    <div class="wrap">
+      <div class="topbar">
+        <div class="title">OpenClaw</div>
+        <div class="pill" id="statusPill">
+          <span class="dot" id="statusDot"></span>
+          <span id="statusText">Loading…</span>
+        </div>
+      </div>
 
-    <div class="row">
-      <label>Relay HTTP Base URL (for pairing)</label>
-      <input id="httpBase" type="text" placeholder="http://ec2-x-x-x-x.compute.amazonaws.com:8787" />
-    </div>
+      <div class="section">
+        <h3>Relay Server</h3>
+        <label for="httpBase">Relay HTTP Base URL</label>
+        <input id="httpBase" type="text" placeholder="http://ec2-x-x-x-x.compute.amazonaws.com:8787" />
 
-    <div class="row">
-      <button id="pairBtn">Pair</button>
-      <button id="connectBtn">Connect WS</button>
-      <button id="disconnectBtn">Disconnect</button>
-      <div class="small" id="pairInfo"></div>
-    </div>
+        <div class="spacer"></div>
+        <div class="row">
+          <button class="btn primary" id="pairBtn">Pair</button>
+          <button class="btn" id="connectBtn" title="Connect WebSocket">Connect</button>
+          <button class="btn ghost" id="disconnectBtn" title="Disconnect WebSocket">Disconnect</button>
+        </div>
 
-    <hr/>
+        <div class="spacer"></div>
+        <div class="muted" id="pairInfo"></div>
+      </div>
 
-    <div class="row">
-      <button id="attachBtn">Attach current tab</button>
-      <div class="tabs" id="tabs"></div>
-    </div>
+      <div class="section">
+        <h3>Tab Attach</h3>
+        <div class="toggle">
+          <div class="left">
+            <div class="name">Attach current tab</div>
+            <div class="desc" id="attachDesc">Attach the active tab to stream events.</div>
+          </div>
+          <label style="margin:0; display:flex; align-items:center; gap:8px;">
+            <input class="switch-input" type="checkbox" id="attachToggle" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+        </div>
 
-    <div class="row">
-      <label><input type="checkbox" id="allowActions"/> Allow Actions (DANGEROUS)</label>
-    </div>
+        <div class="spacer"></div>
+        <div class="muted" id="attachedList"></div>
+      </div>
 
-    <div class="row">
-      <label>Domain allowlist (one per line)</label>
-      <textarea id="allowlist" placeholder="example.com\napp.example.com"></textarea>
-      <div class="small">Actions will only run when Allow Actions is enabled and the current tab hostname matches this allowlist.</div>
-    </div>
+      <div class="section">
+        <h3>Security</h3>
+        <div class="toggle">
+          <div class="left">
+            <div class="name">Allow Actions</div>
+            <div class="desc">If enabled, OpenClaw can click/type/navigate on allowed domains.</div>
+          </div>
+          <label style="margin:0; display:flex; align-items:center; gap:8px;">
+            <input class="switch-input" type="checkbox" id="allowActions" />
+            <span class="switch" aria-hidden="true"></span>
+          </label>
+        </div>
 
-    <div class="row">
-      <label>Audit log (latest)</label>
-      <div class="log" id="log"></div>
+        <div class="spacer"></div>
+        <label for="allowlist">Domain allowlist (one per line)</label>
+        <textarea id="allowlist" placeholder="example.com\napp.example.com"></textarea>
+        <div class="muted">Actions run only when Allow Actions is enabled and the current tab hostname matches this allowlist.</div>
+      </div>
+
+      <div class="section">
+        <h3>Audit Log</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 84px">Time</th>
+              <th style="width: 78px">Kind</th>
+              <th style="width: 52px">Tab</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="auditBody">
+            <tr><td colspan="4" class="muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="muted" id="buildInfo" style="text-align:right;"></div>
     </div>
 
     <script type="module" src="popup.js"></script>

@@ -14,8 +14,8 @@ function qs<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
-function setStatus(text: string) {
-  qs('status').textContent = text;
+async function rpc(msg: any): Promise<any> {
+  return await chrome.runtime.sendMessage(msg);
 }
 
 function normalizeAllowlist(text: string): string[] {
@@ -25,14 +25,10 @@ function normalizeAllowlist(text: string): string[] {
     .filter(Boolean);
 }
 
-async function rpc(msg: any): Promise<any> {
-  return await chrome.runtime.sendMessage(msg);
-}
-
 function detectPairMeta(): PairMeta {
   const ua = navigator.userAgent || '';
 
-  // Very lightweight heuristics (good enough to show user what they’re approving).
+  // Lightweight heuristics (good enough for approval UI).
   let browser: string | undefined;
   if (ua.includes('Edg/')) browser = 'Edge';
   else if (ua.includes('Chrome/')) browser = 'Chrome';
@@ -41,10 +37,48 @@ function detectPairMeta(): PairMeta {
   let os: string | undefined;
   if (ua.includes('Windows')) os = 'Windows';
   else if (ua.includes('Mac OS X')) os = 'macOS';
-  else if (ua.includes('Linux')) os = 'Linux';
   else if (ua.includes('Android')) os = 'Android';
+  else if (ua.includes('Linux')) os = 'Linux';
 
   return { browser, os, userAgent: ua };
+}
+
+async function getActiveTabId(): Promise<number | null> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const t = tabs?.[0];
+    return typeof t?.id === 'number' ? t.id : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStatusPill(wsStatus: string, token?: string) {
+  const dot = qs<HTMLSpanElement>('statusDot');
+  const text = qs<HTMLSpanElement>('statusText');
+
+  const connected = wsStatus === 'connected';
+  const paired = !!token;
+
+  if (connected) {
+    dot.classList.remove('bad');
+    dot.classList.add('good');
+    text.textContent = paired ? 'Connected' : 'Connected (unpaired?)';
+    return;
+  }
+
+  dot.classList.remove('good');
+  dot.classList.add('bad');
+  text.textContent = paired ? 'Disconnected' : 'Disconnected';
+}
+
+async function renderAttachedList(attachedTabIds: number[]) {
+  const el = qs('attachedList');
+  if (!attachedTabIds?.length) {
+    el.textContent = 'No tabs attached.';
+    return;
+  }
+  el.textContent = `Attached tabs: ${attachedTabIds.join(', ')}`;
 }
 
 async function refresh() {
@@ -52,35 +86,75 @@ async function refresh() {
   const s = state.settings;
 
   qs<HTMLInputElement>('httpBase').value = s.httpBase || '';
+
+  const wsStatus = state.ws?.status || 'disconnected';
+  setStatusPill(wsStatus, s.token);
+
+  // Build info (optional)
+  try {
+    qs('buildInfo').textContent = `build ${String((globalThis as any).__BUILD_TIME__ || '').slice(0, 19)}`;
+  } catch {
+    // ignore
+  }
+
+  // Attach toggle state
+  const activeTabId = await getActiveTabId();
+  const attached = (s.attachedTabIds || []) as number[];
+  const isActiveAttached = activeTabId != null && attached.includes(activeTabId);
+  const attachToggle = qs<HTMLInputElement>('attachToggle');
+  attachToggle.checked = isActiveAttached;
+
+  const attachDesc = qs('attachDesc');
+  if (activeTabId == null) {
+    attachDesc.textContent = 'No active tab detected.';
+    attachToggle.disabled = true;
+  } else {
+    attachToggle.disabled = false;
+    attachDesc.textContent = isActiveAttached ? `Tab ${activeTabId} is attached.` : `Tab ${activeTabId} is not attached.`;
+  }
+
+  await renderAttachedList(attached);
+
+  // Security
   qs<HTMLInputElement>('allowActions').checked = !!s.allowActions;
   qs<HTMLTextAreaElement>('allowlist').value = (s.allowlist || []).join('\n');
 
-  const wsStatus = state.ws?.status || 'disconnected';
-  const tokenPart = s.token ? `token=${s.token.slice(0, 4)}…` : 'unpaired';
-  setStatus(`WS: ${wsStatus} | ${tokenPart} | attached: ${(s.attachedTabIds || []).length}`);
-
-  const tabsEl = qs('tabs');
-  tabsEl.innerHTML = '';
-  for (const id of s.attachedTabIds || []) {
-    const row = document.createElement('div');
-    row.textContent = `Tab ${id} `;
-    const btn = document.createElement('button');
-    btn.textContent = 'Detach';
-    btn.onclick = async () => {
-      await rpc({ t: 'detach_tab', tabId: id });
-      await refresh();
-    };
-    row.appendChild(btn);
-    tabsEl.appendChild(row);
-  }
-
+  // Audit
   const audit = await getAudit();
-  const logEl = qs('log');
-  logEl.innerHTML = '';
-  for (const entry of audit.slice(-20).reverse()) {
-    const div = document.createElement('div');
-    div.textContent = `[${new Date(entry.ts).toISOString()}] ${entry.kind} tab=${entry.tabId ?? '-'} ${JSON.stringify(entry.detail)}`;
-    logEl.appendChild(div);
+  const body = qs<HTMLTableSectionElement>('auditBody');
+  body.innerHTML = '';
+  const items = audit.slice(-25).reverse();
+  if (!items.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.textContent = 'No audit entries yet.';
+    td.style.color = 'var(--muted)';
+    tr.appendChild(td);
+    body.appendChild(tr);
+  } else {
+    for (const entry of items) {
+      const tr = document.createElement('tr');
+
+      const t1 = document.createElement('td');
+      t1.textContent = new Date(entry.ts).toISOString().slice(11, 19);
+
+      const t2 = document.createElement('td');
+      t2.textContent = String(entry.kind || '');
+
+      const t3 = document.createElement('td');
+      t3.textContent = entry.tabId != null ? String(entry.tabId) : '-';
+
+      const t4 = document.createElement('td');
+      t4.textContent = JSON.stringify(entry.detail);
+      t4.style.fontFamily = 'var(--mono)';
+
+      tr.appendChild(t1);
+      tr.appendChild(t2);
+      tr.appendChild(t3);
+      tr.appendChild(t4);
+      body.appendChild(tr);
+    }
   }
 }
 
@@ -108,11 +182,12 @@ async function pairFlow() {
   const userCode = String(data.userCode || '').toUpperCase();
 
   pairInfo.innerHTML = `
-<div><b>Relay:</b> ${fp}</div>
-<div><b>Code:</b> ${userCode}</div>
-<div style="margin-top:6px">Send this to your OpenClaw bot:</div>
-<div style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace; margin-top:4px;">pair browser ${userCode}</div>
-<div style="margin-top:6px">Waiting for approval…</div>
+<div class="kv">
+  <div>Relay</div><div><span class="mono">${fp}</span></div>
+  <div>Code</div><div><span class="mono">${userCode}</span></div>
+  <div>Command</div><div><span class="mono">pair browser ${userCode}</span></div>
+</div>
+<div style="margin-top:8px; color: var(--muted); font-size: 12px;">Waiting for approval…</div>
 `;
 
   const expiresAt = data.expiresAt as number;
@@ -125,7 +200,8 @@ async function pairFlow() {
     const p = await r2.json();
     if (p.status === 'verified') {
       await rpc({ t: 'popup_set_settings', patch: { token: p.token } });
-      pairInfo.textContent = 'Paired. Click Connect WS.';
+      pairInfo.textContent = 'Paired. Click Connect.';
+      await refresh();
       return;
     }
   }
@@ -135,17 +211,31 @@ async function pairFlow() {
 
 async function main() {
   qs('pairBtn').addEventListener('click', () => pairFlow().catch((e) => (qs('pairInfo').textContent = String(e.message || e))));
+
   qs('connectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_connect' });
     await refresh();
   });
+
   qs('disconnectBtn').addEventListener('click', async () => {
     await rpc({ t: 'popup_disconnect' });
     await refresh();
   });
 
-  qs('attachBtn').addEventListener('click', async () => {
-    await rpc({ t: 'attach_current_tab' });
+  qs<HTMLInputElement>('attachToggle').addEventListener('change', async (e) => {
+    const wantAttached = (e.target as HTMLInputElement).checked;
+    const activeTabId = await getActiveTabId();
+    if (activeTabId == null) {
+      await refresh();
+      return;
+    }
+
+    if (wantAttached) {
+      await rpc({ t: 'attach_current_tab' });
+    } else {
+      await rpc({ t: 'detach_tab', tabId: activeTabId });
+    }
+
     await refresh();
   });
 
@@ -161,9 +251,17 @@ async function main() {
     await refresh();
   });
 
+  // Save Relay URL on blur for convenience.
+  qs<HTMLInputElement>('httpBase').addEventListener('change', async (e) => {
+    const httpBase = (e.target as HTMLInputElement).value.trim();
+    await rpc({ t: 'popup_set_settings', patch: { httpBase } });
+    await refresh();
+  });
+
   await refresh();
 }
 
 main().catch((e) => {
-  setStatus(`Error: ${String(e.message || e)}`);
+  qs('statusText').textContent = `Error: ${String(e.message || e)}`;
+  qs('statusDot').classList.add('bad');
 });

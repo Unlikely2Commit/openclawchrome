@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-chrome-extension-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm -w @openclaw/shared run build && npm -w @openclaw/extension run build && npm -w @openclaw/relay run build",
+    "typecheck": "npm -w @openclaw/shared run typecheck && npm -w @openclaw/extension run typecheck && npm -w @openclaw/relay run typecheck",
+    "lint": "echo 'no lint configured yet'",
+    "clean": "node -e \"require('fs').rmSync('packages/extension/dist',{recursive:true,force:true});require('fs').rmSync('packages/relay/dist',{recursive:true,force:true});\""
+  }
+}

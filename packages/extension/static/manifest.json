@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "OpenClaw Relay",
+  "version": "0.0.1",
+  "description": "Connect Chrome to an OpenClaw relay for observation and (optional) actions.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

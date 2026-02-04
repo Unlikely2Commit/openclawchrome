@@ -110,11 +110,19 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+let lastHttpBaseDraft = '';
+let isEditingHttpBase = false;
+
 async function refresh() {
   const state: PopupState = await rpc({ t: 'popup_get_state' });
   const s = state.settings;
 
-  qs<HTMLInputElement>('httpBase').value = s.httpBase || '';
+  // Don't clobber the relay URL while the user is typing.
+  const httpEl = qs<HTMLInputElement>('httpBase');
+  if (!isEditingHttpBase) {
+    httpEl.value = s.httpBase || '';
+    lastHttpBaseDraft = httpEl.value;
+  }
 
   const wsStatus = state.ws?.status || 'disconnected';
   setStatusPill(wsStatus);
@@ -305,9 +313,19 @@ async function main() {
 
   // allowlist removed for v0.2.2 testing
 
-  // Relay URL save on change
-  qs<HTMLInputElement>('httpBase').addEventListener('change', async (e) => {
-    const httpBase = (e.target as HTMLInputElement).value.trim();
+  // Relay URL: avoid wiping mid-typing; save on blur (and allow manual edit).
+  const httpEl = qs<HTMLInputElement>('httpBase');
+  httpEl.addEventListener('focus', () => {
+    isEditingHttpBase = true;
+    lastHttpBaseDraft = httpEl.value;
+  });
+  httpEl.addEventListener('input', () => {
+    // keep local draft; do not persist yet
+    lastHttpBaseDraft = httpEl.value;
+  });
+  httpEl.addEventListener('blur', async () => {
+    isEditingHttpBase = false;
+    const httpBase = (lastHttpBaseDraft || '').trim();
     await rpc({ t: 'popup_set_settings', patch: { httpBase } });
     await refresh();
   });

@@ -3,6 +3,7 @@ import type {
   ActionRequest,
   OpenTabRequest,
   Message,
+  ClientType,
   TabEvent,
   ExtractRequest,
   ExtractKind,
@@ -15,10 +16,63 @@ import type {
   ExtractClickable,
   ScreenshotRequest
 } from '@openclaw/shared';
-import { RelayWS } from './ws';
+import type { WSState } from './ws';
 import { appendAudit, getSettings, setSettings } from './storage';
 
-const relay = new RelayWS();
+let wsState: WSState = { status: 'disconnected' };
+
+async function ensureOffscreenDocument() {
+  // Keep WebSocket alive in an offscreen document so MV3 service worker suspension
+  // doesn't tear down the connection.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const offscreen: any = (chrome as any).offscreen;
+  if (!offscreen?.createDocument) return;
+
+  try {
+    const has = (await offscreen.hasDocument?.()) as boolean | undefined;
+    if (has) return;
+  } catch {
+    // ignore
+  }
+
+  try {
+    await offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['IFRAME_SCRIPTING'],
+      justification: 'Maintain a persistent WebSocket connection to the OpenClaw relay'
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function relayConnect(wsUrl: string, token: string, clientId: string) {
+  await ensureOffscreenDocument();
+  wsState = { status: 'connecting' };
+  try {
+    await chrome.runtime.sendMessage({ t: 'offscreen_connect', wsUrl, token, clientId });
+  } catch {
+    // ignore
+  }
+}
+
+async function relayDisconnect() {
+  try {
+    await chrome.runtime.sendMessage({ t: 'offscreen_disconnect' });
+  } catch {
+    // ignore
+  }
+  wsState = { status: 'disconnected' };
+}
+
+function relaySend(msg: Message, to: ClientType) {
+  // fire-and-forget; offscreen owns the websocket
+  try {
+    chrome.runtime.sendMessage({ t: 'offscreen_send', msg, to });
+  } catch {
+    // ignore
+  }
+}
 
 const GROUP_TITLE = 'OpenClaw';
 const GROUP_COLOR: chrome.tabGroups.ColorEnum = 'red';
@@ -48,7 +102,7 @@ async function scheduleReconnect(reason = 'unknown') {
         const token = settings.token;
         if (!httpBase || !token) return;
         const wsUrl = wsBaseFromHttp(httpBase);
-        relay.connect({ wsUrl, token, clientId: settings.clientId });
+        void relayConnect(wsUrl, token, settings.clientId);
         void updateBadge();
       } catch {
         // try again next wake
@@ -62,21 +116,21 @@ async function ensureConnected() {
   const settings = await getSettings();
   if (!settings.httpBase || !settings.token) return;
   if (settings.autoConnect === false) return;
-  if (relay.state.status === 'connected' || relay.state.status === 'connecting') return;
+  if (wsState.status === 'connected' || wsState.status === 'connecting') return;
 
   const wsUrl = wsBaseFromHttp(settings.httpBase);
   reconnectAttempt = 0;
-  relay.connect({ wsUrl, token: settings.token, clientId: settings.clientId });
+  await relayConnect(wsUrl, settings.token, settings.clientId);
   await updateBadge();
 }
 
 async function updateBadge() {
   const settings = await getSettings();
-  const connected = relay.state.status === 'connected';
+  const connected = wsState.status === 'connected';
 
   // RAG badge: keep it simple.
   // Green = connected, Amber = connecting, Red = disconnected.
-  const status = relay.state.status;
+  const status = wsState.status;
   const dot = '●';
 
   if (status === 'connected') {
@@ -90,7 +144,7 @@ async function updateBadge() {
   } else {
     await chrome.action.setBadgeText({ text: dot });
     await chrome.action.setBadgeBackgroundColor({ color: '#c62828' });
-    await chrome.action.setTitle({ title: relay.state.lastError ? `OpenClaw (disconnected: ${relay.state.lastError})` : 'OpenClaw (disconnected)' });
+    await chrome.action.setTitle({ title: wsState.lastError ? `OpenClaw (disconnected: ${wsState.lastError})` : 'OpenClaw (disconnected)' });
   }
 }
 
@@ -183,7 +237,7 @@ async function ensureControlled(tabId: number): Promise<void> {
 async function announceAttachTab(tabId: number): Promise<void> {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (tab.url) relay.send({ t: 'attach_tab', tabId, url: tab.url, title: tab.title }, 'agent');
+    if (tab.url) relaySend({ t: 'attach_tab', tabId, url: tab.url, title: tab.title }, 'agent');
     await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId, detail: { kind: 'controlled', url: tab.url, title: tab.title } });
   } catch {
     // ignore
@@ -245,7 +299,7 @@ async function showWaitingBanner(tabId: number, message: string) {
   }
 }
 
-relay.onMessage(async (env: Envelope) => {
+async function handleRelayEnvelope(env: Envelope) {
   const msg = env.msg;
   if (msg.t === 'action_request') {
     await handleActionRequest(msg);
@@ -265,7 +319,7 @@ relay.onMessage(async (env: Envelope) => {
   if (msg.t === 'resume') {
     await handleResume(msg as Resume);
   }
-});
+}
 
 async function isAllowedForTab(
   tabId: number,
@@ -305,14 +359,14 @@ async function handleActionRequest(req: ActionRequest) {
 
     // Tell the agent to hand off (so it can message the user), AND show an in-page banner.
     try {
-      relay.send({ t: 'wait_for_user', requestId: req.requestId, tabId: req.tabId, message: hint }, 'agent');
+      relaySend({ t: 'wait_for_user', requestId: req.requestId, tabId: req.tabId, message: hint }, 'agent');
     } catch {
       // ignore
     }
     await showWaitingBanner(req.tabId, hint);
     await showNotification({ title: 'OpenClaw needs you', message: hint });
 
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error: reason }, 'agent');
+    relaySend({ t: 'action_result', requestId: req.requestId, ok: false, error: reason }, 'agent');
     return;
   }
 
@@ -342,12 +396,12 @@ async function handleActionRequest(req: ActionRequest) {
     const receipt = await collectActionReceipt(req.tabId).catch(() => undefined);
 
     await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req, receipt } });
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: true, receipt }, 'agent');
+    relaySend({ t: 'action_result', requestId: req.requestId, ok: true, receipt }, 'agent');
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     const receipt = await collectActionReceipt(req.tabId).catch(() => undefined);
     await appendAudit({ ts: Date.now(), kind: 'action', tabId: req.tabId, detail: { req, error, receipt } });
-    relay.send({ t: 'action_result', requestId: req.requestId, ok: false, error, receipt }, 'agent');
+    relaySend({ t: 'action_result', requestId: req.requestId, ok: false, error, receipt }, 'agent');
   }
 }
 
@@ -355,13 +409,13 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
   const settings = await getSettings();
   if (!settings.allowActions) {
     await showNotification({ title: 'OpenClaw action blocked', message: 'Allow Actions is disabled. Turn ON “Allow Actions” in the extension popup.' });
-    relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
+    relaySend({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Allow Actions is disabled' }, 'agent');
     return;
   }
   try {
     new URL(req.url);
   } catch {
-    relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Invalid URL' }, 'agent');
+    relaySend({ t: 'open_tab_result', requestId: req.requestId, ok: false, error: 'Invalid URL' }, 'agent');
     return;
   }
 
@@ -374,10 +428,10 @@ async function handleOpenTabRequest(req: OpenTabRequest) {
       await ensureControlled(tab.id);
     }
 
-    relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: true, tabId: tab.id }, 'agent');
+    relaySend({ t: 'open_tab_result', requestId: req.requestId, ok: true, tabId: tab.id }, 'agent');
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    relay.send({ t: 'open_tab_result', requestId: req.requestId, ok: false, error }, 'agent');
+    relaySend({ t: 'open_tab_result', requestId: req.requestId, ok: false, error }, 'agent');
   }
 }
 
@@ -385,7 +439,7 @@ async function handleExtractRequest(req: ExtractRequest) {
   // "Eyes" should work even if Allow Actions is disabled.
   const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) {
-    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error: allowed.reason }, 'agent');
+    relaySend({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error: allowed.reason }, 'agent');
     return;
   }
 
@@ -628,7 +682,7 @@ async function handleExtractRequest(req: ExtractRequest) {
 
     const payload: ExtractScriptPayload = (result ?? null) as ExtractScriptPayload;
 
-    relay.send(
+    relaySend(
       {
         t: 'extract_result',
         requestId: req.requestId,
@@ -645,7 +699,7 @@ async function handleExtractRequest(req: ExtractRequest) {
     );
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    relay.send({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error }, 'agent');
+    relaySend({ t: 'extract_result', requestId: req.requestId, ok: false, tabId: req.tabId, kind: req.kind, error }, 'agent');
   }
 }
 
@@ -753,7 +807,7 @@ async function handleWaitForUser(req: WaitForUser) {
 async function handleScreenshotRequest(req: ScreenshotRequest) {
   const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) {
-    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
+    relaySend({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
     return;
   }
 
@@ -793,17 +847,17 @@ async function handleScreenshotRequest(req: ScreenshotRequest) {
       // ignore
     }
 
-    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: true, tabId: req.tabId, dataUrl, pageInfo }, 'agent');
+    relaySend({ t: 'screenshot_result', requestId: req.requestId, ok: true, tabId: req.tabId, dataUrl, pageInfo }, 'agent');
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    relay.send({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
+    relaySend({ t: 'screenshot_result', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
   }
 }
 
 async function handleResume(req: Resume) {
   const allowed = await isAllowedForTab(req.tabId, { requireActions: false });
   if (!allowed.ok) {
-    relay.send({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
+    relaySend({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error: allowed.reason }, 'agent');
     return;
   }
 
@@ -817,7 +871,7 @@ async function handleResume(req: Resume) {
   // Acknowledge + send fresh page_info extraction.
   try {
     const receipt = await collectActionReceipt(req.tabId);
-    relay.send(
+    relaySend(
       {
         t: 'resume_ack',
         requestId: req.requestId,
@@ -830,7 +884,7 @@ async function handleResume(req: Resume) {
 
     // Also emit an extract_result (page_info) so agents that only listen for extracts can refresh state.
     if (receipt.url && receipt.title && receipt.readyState) {
-      relay.send(
+      relaySend(
         {
           t: 'extract_result',
           requestId: req.requestId,
@@ -844,7 +898,7 @@ async function handleResume(req: Resume) {
     }
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    relay.send({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
+    relaySend({ t: 'resume_ack', requestId: req.requestId, ok: false, tabId: req.tabId, error }, 'agent');
   }
 }
 
@@ -915,7 +969,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // If the tab is already controlled, re-announce it opportunistically while the popup is open.
       // This fixes cases where WS reconnected after Start, and the original attach_tab got dropped.
       try {
-        if (relay.state.status === 'connected' && controlled.inGroup && controlled.activeTabId) {
+        if (wsState.status === 'connected' && controlled.inGroup && controlled.activeTabId) {
           const now = Date.now();
           const should =
             !lastAnnounce ||
@@ -930,7 +984,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // ignore
       }
 
-      sendResponse({ ws: relay.state, settings: after, controlled });
+      sendResponse({ ws: wsState, settings: after, controlled });
       return;
     }
 
@@ -947,7 +1001,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await setSettings({ autoConnect: true });
       const wsUrl = wsBaseFromHttp(settings.httpBase);
       reconnectAttempt = 0;
-      relay.connect({ wsUrl, token: settings.token, clientId: settings.clientId });
+      await relayConnect(wsUrl, settings.token, settings.clientId);
       await updateBadge();
       sendResponse({ ok: true });
       return;
@@ -955,7 +1009,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     if (msg?.t === 'popup_disconnect') {
       await setSettings({ autoConnect: false });
-      relay.disconnect();
+      await relayDisconnect();
       await updateBadge();
       sendResponse({ ok: true });
       return;
@@ -979,25 +1033,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Prevent auto-control from immediately re-attaching this tab.
       await setSettings({ skipAutoControlTabId: tab.id });
       await removeTabFromGroup(tab.id);
-      relay.send({ t: 'detach_tab', tabId: tab.id }, 'agent');
+      relaySend({ t: 'detach_tab', tabId: tab.id }, 'agent');
       await appendAudit({ ts: Date.now(), kind: 'tab_control', tabId: tab.id, detail: { kind: 'detached' } });
       sendResponse({ ok: true });
       return;
     }
 
+    if (msg?.t === 'ws_env') {
+      const env = msg.env as Envelope;
+      await handleRelayEnvelope(env);
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (msg?.t === 'ws_closed') {
+      wsState = { status: 'disconnected' };
+      void updateBadge();
       void scheduleReconnect('ws_closed');
       sendResponse({ ok: true });
       return;
     }
 
     if (msg?.t === 'ws_error') {
+      wsState = { status: 'disconnected', lastError: 'WebSocket error' };
+      void updateBadge();
       void scheduleReconnect('ws_error');
       sendResponse({ ok: true });
       return;
     }
 
     if (msg?.t === 'ws_open') {
+      wsState = { status: 'connected' };
+      void updateBadge();
       void reannounceControlledTabs();
       sendResponse({ ok: true });
       return;
@@ -1014,7 +1081,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (maybe.t !== 'tab_event') return;
 
       const event = ev as TabEvent;
-      relay.send({ ...event, tabId }, 'agent');
+      relaySend({ ...event, tabId }, 'agent');
       return;
     }
   })()

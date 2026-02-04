@@ -11,7 +11,8 @@ fs.mkdirSync(dist, { recursive: true });
 const entryPoints = {
   background: path.join(root, 'src/background.ts'),
   content: path.join(root, 'src/content.ts'),
-  popup: path.join(root, 'src/popup.ts')
+  popup: path.join(root, 'src/popup.ts'),
+  offscreen: path.join(root, 'src/offscreen.ts')
 };
 
 await build({

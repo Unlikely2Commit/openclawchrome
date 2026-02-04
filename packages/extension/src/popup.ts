@@ -225,6 +225,12 @@ async function refresh() {
   const detachBtn = qs<HTMLButtonElement>('detachBtn');
   const startBtn = qs<HTMLButtonElement>('startBtn');
 
+  // Connect/disconnect button states
+  const connectBtn = qs<HTMLButtonElement>('connectBtn');
+  const disconnectBtn = qs<HTMLButtonElement>('disconnectBtn');
+  connectBtn.disabled = state.ws?.status === 'connected';
+  disconnectBtn.disabled = state.ws?.status !== 'connected';
+
   const inGroup = !!c.inGroup;
   const gTitle = c.groupTitle || (inGroup ? 'OpenClaw' : '—');
   const gColor = c.groupColor ? String(c.groupColor) : '';
@@ -295,7 +301,13 @@ async function pairFlow() {
     if (p.status === 'verified') {
       pairingPending = false;
       await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({ t: 'popup_set_settings', patch: { token: p.token } });
-      setPairInfo('Paired. Background will try to connect automatically (or click Connect).');
+      setPairInfo('Paired. Connecting…');
+      // Kick the background into connecting immediately so the user doesn’t have to.
+      try {
+        await rpc<{ t: 'popup_connect' }, { ok: true }>({ t: 'popup_connect' });
+      } catch {
+        // ignore; autoConnect may still connect shortly
+      }
       await refresh();
       return;
     }
@@ -318,6 +330,10 @@ async function main() {
 
   // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
+    const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
+    // If already connected, do nothing (prevents confusing “click Connect → disconnect”).
+    if (state.ws?.status === 'connected') return;
+
     const btn = qs<HTMLButtonElement>('connectBtn');
     const prev = btn.textContent || 'Connect';
     try {
@@ -327,8 +343,8 @@ async function main() {
       for (let i = 0; i < 6; i++) {
         await new Promise((r) => setTimeout(r, 400));
         await refresh();
-        const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
-        if (state.ws?.status === 'connected') break;
+        const st = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
+        if (st.ws?.status === 'connected') break;
       }
     } finally {
       btn.classList.remove('loading');

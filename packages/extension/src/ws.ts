@@ -19,10 +19,15 @@ export class RelayWS {
   }
 
   connect(opts: { wsUrl: string; token: string; clientId: string }) {
+    // If already connected to the same URL, do nothing.
+    const nextUrl = `${opts.wsUrl}?token=${encodeURIComponent(opts.token)}&client=extension&clientId=${encodeURIComponent(opts.clientId)}`;
+    if (this.ws && this.state.status === 'connected' && this.url === nextUrl) return;
+
+    // If connecting/connected but URL changes, reset.
     this.disconnect();
     this.token = opts.token;
     this.clientId = opts.clientId;
-    this.url = `${opts.wsUrl}?token=${encodeURIComponent(opts.token)}&client=extension&clientId=${encodeURIComponent(opts.clientId)}`;
+    this.url = nextUrl;
 
     this.state = { status: 'connecting' };
     const ws = new WebSocket(this.url);

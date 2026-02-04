@@ -7,7 +7,11 @@ import type {
   ExtractKind,
   ActionReceipt,
   WaitForUser,
-  Resume
+  Resume,
+  PageInfo,
+  ExtractLink,
+  ExtractFormField,
+  ExtractClickable
 } from '@openclaw/shared';
 import { RelayWS } from './ws';
 import { appendAudit, getSettings, setSettings } from './storage';
@@ -474,7 +478,15 @@ async function handleExtractRequest(req: ExtractRequest) {
       args: [req.kind, max]
     });
 
-    const payload = (result || {}) as any;
+    type ExtractScriptPayload = {
+      pageInfo: PageInfo;
+      readableText?: { text: string };
+      links?: { links: ExtractLink[] };
+      forms?: { fields: ExtractFormField[] };
+      visibleClickables?: { clickables: ExtractClickable[] };
+    };
+
+    const payload: ExtractScriptPayload = (result ?? null) as ExtractScriptPayload;
 
     relay.send(
       {
@@ -571,13 +583,21 @@ async function collectActionReceipt(tabId: number): Promise<ActionReceipt> {
     }
   });
 
-  const r = (result || {}) as any;
+  type ReceiptScriptPayload = {
+    url?: string;
+    title?: string;
+    readyState?: ActionReceipt['readyState'];
+    excerpt?: string;
+    errorBanners?: string[];
+  };
+
+  const r: ReceiptScriptPayload = (result ?? {}) as ReceiptScriptPayload;
   return {
     url: typeof r.url === 'string' ? r.url : undefined,
     title: typeof r.title === 'string' ? r.title : undefined,
     readyState: r.readyState,
     excerpt: typeof r.excerpt === 'string' ? r.excerpt : undefined,
-    errorBanners: Array.isArray(r.errorBanners) ? (r.errorBanners as string[]) : undefined
+    errorBanners: Array.isArray(r.errorBanners) ? r.errorBanners : undefined
   };
 }
 

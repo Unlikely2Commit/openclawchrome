@@ -16,6 +16,7 @@ import type {
   DetachTab,
   TabEvent,
   ActionResult,
+  ExtractResult,
   ResumeAck
 } from '@openclaw/shared';
 
@@ -59,7 +60,7 @@ type ControlledTab = {
 type LastState = {
   controlledTab?: ControlledTab;
   lastActionResult?: { env: Envelope<ActionResult>; at: number };
-  lastExtractResult?: { env: Envelope<any>; at: number };
+  lastExtractResult?: { env: Envelope<ExtractResult>; at: number };
   lastResumeAck?: { env: Envelope<ResumeAck>; at: number };
   lastTabEvent?: { env: Envelope<TabEvent>; at: number };
   lastAttach?: { env: Envelope<AttachTab>; at: number };
@@ -86,18 +87,18 @@ function recordToAgent(token: string, env: Envelope) {
   if (env.msg?.t === 'attach_tab') {
     const m = env.msg as AttachTab;
     last.controlledTab = { tabId: m.tabId, url: m.url, title: m.title, updatedAt: at };
-    last.lastAttach = { env: env as any, at };
+    last.lastAttach = { env: env as Envelope<AttachTab>, at };
   }
 
   if (env.msg?.t === 'detach_tab') {
     const m = env.msg as DetachTab;
     if (last.controlledTab?.tabId === m.tabId) last.controlledTab = undefined;
-    last.lastDetach = { env: env as any, at };
+    last.lastDetach = { env: env as Envelope<DetachTab>, at };
   }
 
   if (env.msg?.t === 'tab_event') {
     const m = env.msg as TabEvent;
-    last.lastTabEvent = { env: env as any, at };
+    last.lastTabEvent = { env: env as Envelope<TabEvent>, at };
     // keep controlled tab metadata fresh if we can
     if (last.controlledTab && last.controlledTab.tabId === m.tabId) {
       if (m.url) last.controlledTab.url = m.url;
@@ -107,15 +108,15 @@ function recordToAgent(token: string, env: Envelope) {
   }
 
   if (env.msg?.t === 'action_result') {
-    last.lastActionResult = { env: env as any, at };
+    last.lastActionResult = { env: env as Envelope<ActionResult>, at };
   }
 
-  if ((env.msg as any)?.t === 'extract_result') {
-    last.lastExtractResult = { env: env as any, at };
+  if (env.msg?.t === 'extract_result') {
+    last.lastExtractResult = { env: env as Envelope<ExtractResult>, at };
   }
 
-  if ((env.msg as any)?.t === 'resume_ack') {
-    last.lastResumeAck = { env: env as any, at };
+  if (env.msg?.t === 'resume_ack') {
+    last.lastResumeAck = { env: env as Envelope<ResumeAck>, at };
   }
 
   lastByToken.set(token, last);

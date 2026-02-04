@@ -48,6 +48,33 @@ const byUserCode = new Map<string, PendingPair>(); // userCode -> entry
 type Conn = { ws: WebSocket; client: ClientType; clientId: string };
 const connsByToken = new Map<string, { extension?: Conn; agent?: Conn }>();
 
+// Persist issued tokens so relay restarts don't break existing pairings.
+const TOKENS_FILE = process.env.RELAY_TOKENS_FILE || path.join(process.cwd(), '.openclaw-relay-tokens.json');
+let issuedTokens = new Set<string>();
+
+function loadIssuedTokens() {
+  try {
+    const raw = fs.readFileSync(TOKENS_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    if (Array.isArray(data?.tokens)) {
+      issuedTokens = new Set(data.tokens.map((t: any) => String(t)).filter(Boolean));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function saveIssuedTokens() {
+  try {
+    fs.mkdirSync(path.dirname(TOKENS_FILE), { recursive: true });
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify({ tokens: Array.from(issuedTokens) }, null, 2) + '\n', 'utf8');
+  } catch {
+    // ignore
+  }
+}
+
+loadIssuedTokens();
+
 // --- Dev visibility (Model 2 UX support) ---
 
 type ControlledTab = {
@@ -258,6 +285,9 @@ app.post('/pair/approve', (req, res) => {
   entry.verified = true;
   if (approverLabel) entry.approverLabel = approverLabel;
 
+  issuedTokens.add(entry.token);
+  saveIssuedTokens();
+
   return res.json({ ok: true });
 });
 
@@ -276,6 +306,9 @@ app.post('/pair/confirm', (req, res) => {
 
   if (!entry.token) entry.token = rand(24);
   entry.verified = true;
+
+  issuedTokens.add(entry.token);
+  saveIssuedTokens();
 
   return res.json({ ok: true, token: entry.token });
 });
@@ -322,6 +355,10 @@ app.post('/pair/verify', (req, res) => {
 
   entry.verified = true;
   if (!entry.token) entry.token = rand(24);
+
+  issuedTokens.add(entry.token);
+  saveIssuedTokens();
+
   res.type('text').send(`Paired. You may return to the extension and click Connect WS.\nToken: ${entry.token.slice(0, 6)}…`);
 });
 
@@ -432,7 +469,7 @@ wss.on('connection', (ws, req) => {
 
   // Require that token was issued by pairing OR allow dev override.
   const allowAnyToken = process.env.ALLOW_ANY_TOKEN === '1';
-  const issued = Array.from(pending.values()).some((p) => p.token === token);
+  const issued = issuedTokens.has(token) || Array.from(pending.values()).some((p) => p.token === token);
   if (!allowAnyToken && !issued) {
     ws.close(1008, 'unknown token (pair first)');
     return;

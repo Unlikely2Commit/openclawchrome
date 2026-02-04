@@ -896,6 +896,8 @@ function safeHostname(url?: string): string | undefined {
   }
 }
 
+let lastAnnounce: { tabId: number; ts: number } | null = null;
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.t === 'popup_get_state') {
@@ -909,6 +911,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       const after = await getSettings();
       const controlled = await getControlledInfoForActiveTab();
+
+      // If the tab is already controlled, re-announce it opportunistically while the popup is open.
+      // This fixes cases where WS reconnected after Start, and the original attach_tab got dropped.
+      try {
+        if (relay.state.status === 'connected' && controlled.inGroup && controlled.activeTabId) {
+          const now = Date.now();
+          const should =
+            !lastAnnounce ||
+            lastAnnounce.tabId !== controlled.activeTabId ||
+            now - lastAnnounce.ts > 4000;
+          if (should) {
+            lastAnnounce = { tabId: controlled.activeTabId, ts: now };
+            void announceAttachTab(controlled.activeTabId);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
       sendResponse({ ws: relay.state, settings: after, controlled });
       return;
     }

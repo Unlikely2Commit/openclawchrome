@@ -166,7 +166,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.t === 'do_action') {
       const req: ActionRequest = msg.req;
       if (req.action === 'scroll') {
-        window.scrollTo({ left: req.x ?? window.scrollX, top: req.y ?? window.scrollY, behavior: 'instant' as any });
+        window.scrollTo({ left: req.x ?? window.scrollX, top: req.y ?? window.scrollY, behavior: 'auto' });
       }
 
       if (req.action === 'click') {

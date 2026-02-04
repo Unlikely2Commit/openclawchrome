@@ -3,6 +3,7 @@ import type {
   ActionRequest,
   OpenTabRequest,
   Message,
+  TabEvent,
   ExtractRequest,
   ExtractKind,
   ActionReceipt,
@@ -93,7 +94,7 @@ function wsBaseFromHttp(httpBase: string): string {
 async function isControlledTab(tabId: number): Promise<boolean> {
   try {
     const tab = await chrome.tabs.get(tabId);
-    const gid = (tab as any).groupId as number | undefined;
+    const gid = tab.groupId;
     if (typeof gid !== 'number' || gid < 0) return false;
     const g = await chrome.tabGroups.get(gid);
     return g?.title === GROUP_TITLE;
@@ -233,9 +234,9 @@ async function handleActionRequest(req: ActionRequest) {
       await ensureContentScript(req.tabId);
       try {
         await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
-      } catch (e: any) {
+      } catch (e: unknown) {
         // If the receiving end isn't there yet, inject and retry once.
-        const msg = String(e?.message || e);
+        const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('Receiving end does not exist')) {
           await ensureContentScript(req.tabId);
           await chrome.tabs.sendMessage(req.tabId, { t: 'do_action', req });
@@ -431,7 +432,7 @@ async function handleExtractRequest(req: ExtractRequest) {
             let value: string | undefined;
             if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
               try {
-                value = String((el as any).value ?? '').slice(0, 200) || undefined;
+                if ('value' in el) value = String(el.value ?? '').slice(0, 200) || undefined;
               } catch {
                 // ignore
               }
@@ -539,7 +540,7 @@ async function waitForTabComplete(tabId: number, timeoutMs: number): Promise<voi
     void chrome.tabs
       .get(tabId)
       .then((t) => {
-        if ((t as any)?.status === 'complete') {
+        if (t.status === 'complete') {
           cleanup();
           resolve();
         }
@@ -678,7 +679,7 @@ async function getControlledInfoForActiveTab(): Promise<{
     if (tab?.id != null) activeTabId = tab.id;
 
     if (!tab?.id) return { activeTabId, inGroup: false };
-    const gid = (tab as any).groupId as number | undefined;
+    const gid = tab.groupId;
     if (typeof gid !== 'number' || gid < 0) {
       return { activeTabId, inGroup: false, title: tab.title, url: tab.url, hostname: safeHostname(tab.url) };
     }
@@ -689,7 +690,7 @@ async function getControlledInfoForActiveTab(): Promise<{
       inGroup,
       groupId: gid,
       groupTitle: g?.title,
-      groupColor: (g as any)?.color,
+      groupColor: g?.color,
       title: tab.title,
       url: tab.url,
       hostname: safeHostname(tab.url)
@@ -793,7 +794,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (!tabId) return;
       if (!(await isControlledTab(tabId))) return;
-      relay.send({ ...(msg.event as Message), tabId } as any, 'agent');
+
+      const ev = msg.event as unknown;
+      if (!ev || typeof ev !== 'object') return;
+      const maybe = ev as { t?: unknown };
+      if (maybe.t !== 'tab_event') return;
+
+      const event = ev as TabEvent;
+      relay.send({ ...event, tabId }, 'agent');
       return;
     }
   })()

@@ -1,6 +1,26 @@
-import { getAudit } from './storage';
+import { getAudit, type Settings } from './storage';
+import type { WSState } from './ws';
 
-type PopupState = any;
+// injected at build time (see scripts/build.mjs)
+declare const __BUILD_TIME__: string | undefined;
+
+type ControlledInfo = {
+  activeTabId: number | null;
+  inGroup: boolean;
+  groupId?: number;
+  groupTitle?: string;
+  groupColor?: string;
+  title?: string;
+  url?: string;
+  hostname?: string;
+  lastError?: string;
+};
+
+type PopupGetStateResponse = {
+  ws: WSState;
+  settings: Settings;
+  controlled: ControlledInfo;
+};
 
 type PairMeta = {
   browser?: string;
@@ -14,8 +34,8 @@ function qs<T extends HTMLElement>(id: string): T {
   return el as T;
 }
 
-async function rpc(msg: any): Promise<any> {
-  return await chrome.runtime.sendMessage(msg);
+async function rpc<TReq extends object, TRes>(msg: TReq): Promise<TRes> {
+  return (await chrome.runtime.sendMessage(msg)) as TRes;
 }
 
 function detectPairMeta(): PairMeta {
@@ -109,7 +129,7 @@ function formatTabTitle(title?: string): string {
 }
 
 async function refresh() {
-  const state: PopupState = await rpc({ t: 'popup_get_state' });
+  const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
   const s = state.settings;
 
   // Don't clobber the relay URL while the user is typing.
@@ -123,7 +143,7 @@ async function refresh() {
 
   // Build info (best-effort)
   try {
-    const t = String((globalThis as any).__BUILD_TIME__ || '');
+    const t = String(__BUILD_TIME__ || '');
     qs('buildInfo').textContent = t ? `build ${t.slice(0, 19)}` : '';
   } catch {
     // ignore
@@ -208,7 +228,7 @@ async function pairFlow() {
   // Save httpBase immediately.
   await rpc({ t: 'popup_set_settings', patch: { httpBase } });
 
-  const clientId = (await rpc({ t: 'popup_get_state' })).settings.clientId;
+  const clientId = (await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' })).settings.clientId;
 
   const r1 = await fetch(new URL('/pair/request', httpBase).toString(), {
     method: 'POST',
@@ -216,7 +236,13 @@ async function pairFlow() {
     body: JSON.stringify({ clientId, meta: detectPairMeta() })
   });
   if (!r1.ok) throw new Error(`pair/request failed: ${r1.status}`);
-  const data = await r1.json();
+  const data = (await r1.json()) as {
+    clientId: string;
+    deviceCode: string;
+    userCode: string;
+    expiresAt: number;
+    fingerprint?: { short?: string };
+  };
 
   const relayShort = data.fingerprint?.short ? String(data.fingerprint.short).toUpperCase() : '????';
   const userCode = String(data.userCode || '').toUpperCase();
@@ -232,9 +258,9 @@ async function pairFlow() {
       new URL(`/pair/poll?clientId=${encodeURIComponent(clientId)}&deviceCode=${encodeURIComponent(data.deviceCode)}`, httpBase).toString(),
     );
     if (!r2.ok) continue;
-    const p = await r2.json();
+    const p = (await r2.json()) as { status: 'pending' } | { status: 'verified'; token: string };
     if (p.status === 'verified') {
-      await rpc({ t: 'popup_set_settings', patch: { token: p.token } });
+      await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({ t: 'popup_set_settings', patch: { token: p.token } });
       setPairInfo('Paired. Background will try to connect automatically (or click Connect).');
       await refresh();
       return;
@@ -250,23 +276,23 @@ async function main() {
 
   // Connect/disconnect
   qs('connectBtn').addEventListener('click', async () => {
-    await rpc({ t: 'popup_connect' });
+    await rpc<{ t: 'popup_connect' }, { ok: true }>({ t: 'popup_connect' });
     // Background service worker may connect a moment after this call; poll briefly.
     for (let i = 0; i < 6; i++) {
       await new Promise((r) => setTimeout(r, 400));
       await refresh();
-      const state: PopupState = await rpc({ t: 'popup_get_state' });
+      const state = await rpc<{ t: 'popup_get_state' }, PopupGetStateResponse>({ t: 'popup_get_state' });
       if (state.ws?.status === 'connected') break;
     }
   });
   qs('disconnectBtn').addEventListener('click', async () => {
-    await rpc({ t: 'popup_disconnect' });
+    await rpc<{ t: 'popup_disconnect' }, { ok: true }>({ t: 'popup_disconnect' });
     await refresh();
   });
 
   // Detach
   qs('detachBtn').addEventListener('click', async () => {
-    await rpc({ t: 'popup_detach_active_tab' });
+    await rpc<{ t: 'popup_detach_active_tab' }, { ok: true }>({ t: 'popup_detach_active_tab' });
     await refresh();
   });
 
@@ -284,7 +310,10 @@ async function main() {
   // Security settings
   qs<HTMLInputElement>('allowActions').addEventListener('change', async (e) => {
     const allowActions = (e.target as HTMLInputElement).checked;
-    await rpc({ t: 'popup_set_settings', patch: { allowActions } });
+    await rpc<{ t: 'popup_set_settings'; patch: Partial<Settings> }, { ok: true; settings: Settings }>({
+      t: 'popup_set_settings',
+      patch: { allowActions }
+    });
     await refresh();
   });
 

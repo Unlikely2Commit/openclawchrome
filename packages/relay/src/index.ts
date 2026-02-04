@@ -173,6 +173,17 @@ function loadOrCreateRelayFingerprint(): RelayFingerprint {
 const RELAY_FINGERPRINT = loadOrCreateRelayFingerprint();
 
 const app = express();
+
+// CORS: allow the Chrome extension popup/background to call the relay endpoints.
+// Without this, POSTs (e.g. /pair/request) can fail with "Failed to fetch" due to preflight.
+app.use((req, res, next) => {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+  res.setHeader('access-control-allow-headers', 'content-type');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
 app.use(express.json());
 
 app.get('/', (_req, res) => {
